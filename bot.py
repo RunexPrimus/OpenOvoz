@@ -1377,7 +1377,7 @@ class BotopneBot:
             reply_markup=get_payment_settings_keyboard()
         )
     
-    async def admin_setting_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, setting_key: str):
+    async def admin_setting_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin sozlama kiritish"""
         user = update.effective_user
         
@@ -1386,12 +1386,15 @@ class BotopneBot:
             await update.callback_query.answer("Admin huquqi yo'q!")
             return
         
+        # Callback data dan setting_key ni olish
+        setting_key = update.callback_query.data.split('_', 2)[2]  # admin_setting_REFERRAL_BONUS -> REFERRAL_BONUS
+        
         # Sozlama ma'lumotlarini olish
         setting_info = {
-            'referral_bonus': 'Referal uchun bonus puli (so\'m)',
-            'vote_bonus': 'Ovoz berish uchun bonus puli (so\'m)',
-            'min_withdrawal': 'Minimal yechish miqdori (so\'m)',
-            'commission_rate': 'Komissiya foizi (0.01 = 1%)'
+            'REFERRAL_BONUS': 'Referal uchun bonus puli (so\'m)',
+            'VOTE_BONUS': 'Ovoz berish uchun bonus puli (so\'m)',
+            'MIN_WITHDRAWAL': 'Minimal yechish miqdori (so\'m)',
+            'COMMISSION_RATE': 'Komissiya foizi (0.01 = 1%)'
         }
         
         context.user_data['editing_setting'] = setting_key
@@ -1420,7 +1423,7 @@ class BotopneBot:
             new_value = update.message.text.strip()
             
             # Qiymatni tekshirish
-            if setting_key == 'commission_rate':
+            if setting_key == 'COMMISSION_RATE':
                 rate = float(new_value)
                 if rate < 0 or rate > 1:
                     await update.message.reply_text("❌ Xato: Komissiya foizi 0-1 orasida bo'lishi kerak!")

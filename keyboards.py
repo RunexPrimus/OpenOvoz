@@ -317,12 +317,12 @@ def get_payment_settings_keyboard():
     """Pul berish sozlamalari klaviaturasi"""
     keyboard = [
         [
-            InlineKeyboardButton("👥 Referal bonusi", callback_data="admin_setting_referral_bonus"),
-            InlineKeyboardButton("🗳 Ovoz bonusi", callback_data="admin_setting_vote_bonus")
+            InlineKeyboardButton("👥 Referal bonusi", callback_data="admin_setting_REFERRAL_BONUS"),
+            InlineKeyboardButton("🗳 Ovoz bonusi", callback_data="admin_setting_VOTE_BONUS")
         ],
         [
-            InlineKeyboardButton("💸 Minimal yechish", callback_data="admin_setting_min_withdrawal"),
-            InlineKeyboardButton("📊 Komissiya %", callback_data="admin_setting_commission_rate")
+            InlineKeyboardButton("💸 Minimal yechish", callback_data="admin_setting_MIN_WITHDRAWAL"),
+            InlineKeyboardButton("📊 Komissiya %", callback_data="admin_setting_COMMISSION_RATE")
         ],
         [InlineKeyboardButton("🔙 Orqaga", callback_data="admin_payment_back")]
     ]
