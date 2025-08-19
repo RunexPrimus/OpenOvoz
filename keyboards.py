@@ -226,9 +226,8 @@ def get_project_approval_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_screenshot_keyboard():
-    """Screenshot yuborish klaviaturasi"""
+    """Screenshot yuborish klaviaturasi (faqat bekor qilish tugmasi)"""
     keyboard = [
-        [InlineKeyboardButton("📸 Screenshot yuborish", callback_data="send_screenshot")],
         [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_screenshot")]
     ]
     return InlineKeyboardMarkup(keyboard)

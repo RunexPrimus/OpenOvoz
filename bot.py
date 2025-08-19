@@ -1410,7 +1410,7 @@ class BotopneBot:
             f"• Kelgan SMS xabari\n"
             f"• Ovoz berilgan holat\n"
             f"• Loyiha havolasi ochilgan\n\n"
-            f"📤 Rasm yuboring yoki /cancel buyrug'ini bering",
+            f"📤 Skrinshot rasmni yuboring!",
             parse_mode='Markdown',
             reply_markup=get_screenshot_keyboard()
         )
@@ -1432,7 +1432,7 @@ class BotopneBot:
             f"• Kelgan SMS xabari\n"
             f"• Ovoz berilgan holat\n"
             f"• Loyiha havolasi ochilgan\n\n"
-            f"📤 Rasm yuboring yoki /cancel buyrug'ini bering",
+            f"📤 Skrinshot rasmni yuboring!",
             parse_mode='Markdown',
             reply_markup=get_screenshot_keyboard()
         )
@@ -1450,14 +1450,13 @@ class BotopneBot:
         context.user_data['screenshot_1'] = photo.file_id
         
         await update.message.reply_text(
-            f"📸 *1-screenshot qabul qilindi!*\n\n"
             f"⚠️ *Iltimos, ovoz berganingizni aniq tasdiqlovchi screenshot yuboring!*\n\n"
             f"📱 Screenshot da quyidagilar aniq ko'rinishi kerak:\n"
             f"• Kelgan SMS xabari\n"
             f"• Ovoz berilgan holat\n"
             f"• Loyiha havolasi ochilgan\n"
             f"• Ovoz berish tasdiqlanishi\n\n"
-            f"📤 Yana bir rasm yuboring yoki /cancel buyrug'ini bering",
+            f"📤 Skrinshot rasmni yuboring!",
             parse_mode='Markdown',
             reply_markup=get_screenshot_keyboard()
         )
@@ -1475,7 +1474,6 @@ class BotopneBot:
         context.user_data['screenshot_2'] = photo.file_id
         
         await update.message.reply_text(
-            f"📸 *2-screenshot qabul qilindi!*\n\n"
             f"✅ *Ma'lumotlar tekshirish uchun Admin ga yuborildi!*\n\n"
             f"💰 *Tez orada ovoz bergan bo'lsangiz hisobingiz to'ldiriladi!*\n\n"
             f"📋 *Yuborilgan ma'lumotlar:*\n"
@@ -1505,7 +1503,6 @@ class BotopneBot:
         context.user_data['screenshot_3'] = photo.file_id
         
         await update.message.reply_text(
-            f"📸 *3-screenshot qabul qilindi!*\n\n"
             f"✅ *Ma'lumotlar tekshirish uchun Admin ga yuborildi!*\n\n"
             f"💰 *Tez orada ovoz bergan bo'lsangiz hisobingiz to'ldiriladi!*\n\n"
             f"📋 *Yuborilgan ma'lumotlar:*\n"
@@ -1536,7 +1533,7 @@ class BotopneBot:
             f"• Kelgan SMS xabari\n"
             f"• Ovoz berilgan holat\n"
             f"• Loyiha havolasi ochilgan\n\n"
-            f"📤 Rasm yuboring yoki /cancel buyrug'ini bering",
+            f"📤 Skrinshot rasmni yuboring!",
             parse_mode='Markdown',
             reply_markup=get_screenshot_keyboard()
         )
