@@ -521,11 +521,11 @@ class BotopneBot:
             for project in projects:
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"🗳 {project['name']} ovoz berdim✅",
+                        f"Ovoz berdim✅",
                         callback_data=f"vote_project_{project['id']}"
                     ),
                     InlineKeyboardButton(
-                        f"🔗 {project['name']} ovoz berish❗️",
+                        f"Ovoz berish❗️",
                         url=project.get('link', '#')  # Agar link bo'lsa ochadi
                     )
                 ])
@@ -535,11 +535,11 @@ class BotopneBot:
             for project in approved_projects:
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"🗳 {project['name']} uchun ovoz berdim",
+                        f"Ovoz berdim✅",
                         callback_data=f"vote_project_{project['id']}"
                     ),
                     InlineKeyboardButton(
-                        f"🔗 {project['name']} havolasini ochish",
+                        f"Ovoz berish❗️",
                         url=project['link']
                     )
                 ])
