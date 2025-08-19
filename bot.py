@@ -202,8 +202,7 @@ class BotopneBot:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.news_title_received)
                 ],
                 NEWS_CONTENT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.news_content_received),
-                    MessageHandler(filters.PHOTO, self.news_photo_received)
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.news_content_received)
                 ],
                 NEWS_APPROVAL: [
                     CallbackQueryHandler(self.news_approval_received, pattern='^(approve|reject)_news$')
