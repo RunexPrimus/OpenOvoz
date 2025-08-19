@@ -82,6 +82,10 @@ class BotopneBot:
                 WITHDRAWAL_ACCOUNT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.withdrawal_account_received),
                     CallbackQueryHandler(self.button_callback, pattern='^back$')
+                ],
+                WITHDRAWAL_METHOD: [
+                    CallbackQueryHandler(self.withdrawal_method_selected, pattern='^withdraw_(card|phone|account)$'),
+                    CallbackQueryHandler(self.button_callback, pattern='^back$')
                 ]
             },
             fallbacks=[CommandHandler('start', self.start)]
@@ -388,7 +392,7 @@ class BotopneBot:
             if referrer:
                 referred_by = referrer['id']
                 # Referal va yangi foydalanuvchiga bonus berish
-                referral_bonus = int(self.db.get_setting('referral_bonus', REFERRAL_BONUS))
+                referral_bonus = int(self.db.get_setting('REFERRAL_BONUS', REFERRAL_BONUS))
                 self.db.add_balance(referrer['id'], referral_bonus, 'referral_bonus', f'Yangi foydalanuvchi jalb etildi')
         
         # Foydalanuvchini bazaga qo'shish
@@ -406,7 +410,7 @@ class BotopneBot:
         if user_id:
             # Yangi foydalanuvchiga bonus berish
             if referred_by:
-                referral_bonus = int(self.db.get_setting('referral_bonus', REFERRAL_BONUS))
+                referral_bonus = int(self.db.get_setting('REFERRAL_BONUS', REFERRAL_BONUS))
                 self.db.add_balance(user_id, referral_bonus, 'referral_bonus', f'Referal orqali ro\'yxatdan o\'tish')
             
             # Admin foydalanuvchilar uchun admin klaviatura
@@ -571,41 +575,53 @@ class BotopneBot:
         db_user = self.db.get_user(user.id)
         language = db_user['language']
         
-        if db_user['balance'] < int(self.db.get_setting('min_withdrawal', MIN_WITHDRAWAL)):
+        if db_user['balance'] < int(self.db.get_setting('MIN_WITHDRAWAL', MIN_WITHDRAWAL)):
             await update.message.reply_text(
                 get_message('insufficient_balance', language)
             )
             return MAIN_MENU
         
         # Foiz hisobini avtomatik qilish
-        commission_rate = float(self.db.get_setting('commission_rate', COMMISSION_RATE))
+        commission_rate = float(self.db.get_setting('COMMISSION_RATE', COMMISSION_RATE))
         commission_amount = int(db_user['balance'] * commission_rate)
         net_amount = db_user['balance'] - commission_amount
         
-        method_names = {
-            'card': 'karta raqami',
-            'phone': 'telefon raqami'
-        }
-        
-        format_examples = {
-            'card': 'Masalan: 8600123456789012 (16 xonali raqam)',
-            'phone': 'Masalan: +998901234567 (+998 + 9 xonali raqam)'
-        }
-        
-        # Ma'lumotlarni ko'rsatish
-        withdrawal_info = f"💰 *Balans:* {db_user['balance']:,} so'm\n"
-        withdrawal_info += f"💸 *Komissiya ({int(commission_rate * 100)}%):* {commission_amount:,} so'm\n"
-        withdrawal_info += f"✅ *Chiqariladigan summa:* {net_amount:,} so'm\n\n"
-        withdrawal_info += f"📝 *Iltimos, {method_names.get(method, method)}ni kiriting:*\n"
-        withdrawal_info += f"📋 {format_examples.get(method, '')}"
+        # Pul chiqarish usulini tanlash uchun klaviatura
+        await update.message.reply_text(
+            f"💰 *Balans:* {db_user['balance']:,} so'm\n"
+            f"💸 *Komissiya ({int(commission_rate * 100)}%):* {commission_amount:,} so'm\n"
+            f"✅ *Chiqariladigan summa:* {net_amount:,} so'm\n\n"
+            "💳 Pul chiqarish usulini tanlang:",
+            parse_mode='Markdown',
+            reply_markup=get_withdrawal_method_keyboard(language)
+        )
         
         # Context ga ma'lumotlarni saqlash
         context.user_data['withdrawal_amount'] = db_user['balance']
         context.user_data['commission_amount'] = commission_amount
         context.user_data['net_amount'] = net_amount
         
+        return WITHDRAWAL_METHOD
+    
+    async def withdrawal_method_selected(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Pul chiqarish usuli tanlanganda"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Tanlangan usulni olish
+        method = query.data.replace('withdraw_', '')
+        context.user_data['withdrawal_method'] = method
+        
+        # Usul bo'yicha ma'lumot so'rash
+        if method == 'card':
+            message = "💳 *Karta raqamini kiriting:*\n\n📋 Masalan: 8600123456789012 (16 xonali raqam)"
+        elif method == 'phone':
+            message = "📱 *Telefon raqamini kiriting:*\n\n📋 Masalan: +998901234567 (+998 + 9 xonali raqam)"
+        elif method == 'account':
+            message = "🏦 *Hisob raqamini kiriting:*\n\n📋 Masalan: 20208000901234567890"
+        
         await query.edit_message_text(
-            withdrawal_info,
+            message,
             parse_mode='Markdown',
             reply_markup=get_cancel_keyboard()
         )
@@ -646,11 +662,11 @@ class BotopneBot:
         
         help_text = get_message('help_text', language, **{
             'max_votes': MAX_VOTES_PER_SEASON,
-            'vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
-            'referral_bonus': int(self.db.get_setting('referral_bonus', REFERRAL_BONUS)),
-            'referral_vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
-            'min_withdrawal': int(self.db.get_setting('min_withdrawal', MIN_WITHDRAWAL)),
-            'commission': int(float(self.db.get_setting('commission_rate', COMMISSION_RATE)) * 100)
+            'vote_bonus': int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS)),
+            'referral_bonus': int(self.db.get_setting('REFERRAL_BONUS', REFERRAL_BONUS)),
+            'referral_vote_bonus': int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS)),
+            'min_withdrawal': int(self.db.get_setting('MIN_WITHDRAWAL', MIN_WITHDRAWAL)),
+            'commission': int(float(self.db.get_setting('COMMISSION_RATE', COMMISSION_RATE)) * 100)
         })
         
         await update.message.reply_text(help_text)
@@ -737,11 +753,11 @@ class BotopneBot:
         await update.message.reply_text(
             get_message('help_text', language, **{
                 'max_votes': MAX_VOTES_PER_SEASON,
-                'vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
-                'referral_bonus': int(self.db.get_setting('referral_bonus', REFERRAL_BONUS)),
-                'referral_vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
-                'min_withdrawal': int(self.db.get_setting('min_withdrawal', MIN_WITHDRAWAL)),
-                'commission': int(float(self.db.get_setting('commission_rate', COMMISSION_RATE)) * 100)
+                            'vote_bonus': int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS)),
+            'referral_bonus': int(self.db.get_setting('REFERRAL_BONUS', REFERRAL_BONUS)),
+            'referral_vote_bonus': int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS)),
+            'min_withdrawal': int(self.db.get_setting('MIN_WITHDRAWAL', MIN_WITHDRAWAL)),
+                'commission': int(float(self.db.get_setting('COMMISSION_RATE', COMMISSION_RATE)) * 100)
             })
         )
     
@@ -1924,7 +1940,7 @@ class BotopneBot:
                 return
             
             # Ovoz berishni tasdiqlash va bonus berish
-            vote_bonus = int(self.db.get_setting('vote_bonus', VOTE_BONUS))
+            vote_bonus = int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS))
             success = self.db.add_balance(db_user['id'], vote_bonus, 'vote_bonus', f'Loyiha uchun ovoz berish tasdiqlandi')
             
             # Ovoz berishni balance_history ga qo'shish (payment type bilan)
@@ -2028,7 +2044,7 @@ class BotopneBot:
         
         if success:
             await query.edit_message_text(
-                get_message('vote_success', language, bonus=int(self.db.get_setting('vote_bonus', VOTE_BONUS))),
+                get_message('vote_success', language, bonus=int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS))),
                 reply_markup=get_back_keyboard()
             )
         else:
@@ -2051,7 +2067,7 @@ class BotopneBot:
         language = db_user['language']
         
         # Foiz hisobini avtomatik qilish
-        commission_rate = float(self.db.get_setting('commission_rate', COMMISSION_RATE))
+        commission_rate = float(self.db.get_setting('COMMISSION_RATE', COMMISSION_RATE))
         commission_amount = int(db_user['balance'] * commission_rate)
         net_amount = db_user['balance'] - commission_amount
         
