@@ -97,6 +97,7 @@ class BotopneBot:
                 ADMIN_MENU: [
                     MessageHandler(filters.Regex('^📊 Statistikalar$|^📊 Статистика$'), self.admin_statistics),
                     MessageHandler(filters.Regex('^🗳 Mavsum & Loyihalar$|^🗳 Сезоны & Проекты$'), self.admin_projects),
+                    MessageHandler(filters.Regex('^💰 Pul berish$|^💰 Выплаты$'), self.admin_payment_menu),
                     MessageHandler(filters.Regex('^📊 Reytinglar$|^📊 Рейтинги$'), self.admin_ratings),
                     MessageHandler(filters.Regex('^📝 Yangiliklar$|^📝 Новости$'), self.start_news_creation),
                     MessageHandler(filters.Regex('🔙 Asosiy menyu$|^🔙 Главное меню$'), self.back_to_main)
@@ -167,6 +168,7 @@ class BotopneBot:
         admin_handlers = [
             MessageHandler(filters.Regex('^📊 Statistikalar$|^📊 Статистика$'), self.admin_statistics),
             MessageHandler(filters.Regex('^🗳 Mavsum & Loyihalar$|^🗳 Сезоны & Проекты$'), self.admin_projects),
+            MessageHandler(filters.Regex('^💰 Pul berish$|^💰 Выплаты$'), self.admin_payment_menu),
             MessageHandler(filters.Regex('^📊 Reytinglar$|^📊 Рейтинги$'), self.admin_ratings),
             MessageHandler(filters.Regex('^📝 Yangiliklar$|^📝 Новости$'), self.start_news_creation),
             MessageHandler(filters.Regex('^🔙 Asosiy menyu$|^🔙 Главное меню$'), self.back_to_main)
@@ -197,12 +199,11 @@ class BotopneBot:
             ],
             states={
                 NEWS_TITLE: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.news_title_received),
-                    CallbackQueryHandler(self.cancel_news_creation, pattern='^cancel_news$')
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.news_title_received)
                 ],
                 NEWS_CONTENT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.news_content_received),
-                    CallbackQueryHandler(self.cancel_news_creation, pattern='^cancel_news$')
+                    MessageHandler(filters.PHOTO, self.news_photo_received)
                 ],
                 NEWS_APPROVAL: [
                     CallbackQueryHandler(self.news_approval_received, pattern='^(approve|reject)_news$')
@@ -211,6 +212,19 @@ class BotopneBot:
             fallbacks=[CallbackQueryHandler(self.cancel_news_creation, pattern='^cancel_news$')]
         )
         
+        # Pul berish sozlamalari conversation handler
+        payment_settings_conv_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.admin_setting_input, pattern='^admin_setting_')
+            ],
+            states={
+                'WAITING_SETTING_VALUE': [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.admin_setting_value_received)
+                ]
+            },
+            fallbacks=[CallbackQueryHandler(self.admin_payment_back, pattern='^cancel_setting$')]
+        )
+
         # Handlerlarni qo'shish
         self.application.add_handler(conv_handler)
         # Yangi loyiha qo'shish conversation handlerni umumiy callbackdan OLDIN qo'shamiz
@@ -238,6 +252,7 @@ class BotopneBot:
         self.application.add_handler(edit_project_conv_handler)
         self.application.add_handler(broadcast_conv_handler)
         self.application.add_handler(news_conv_handler)
+        self.application.add_handler(payment_settings_conv_handler)
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Botni ishga tushirish"""
@@ -372,7 +387,8 @@ class BotopneBot:
             if referrer:
                 referred_by = referrer['id']
                 # Referal va yangi foydalanuvchiga bonus berish
-                self.db.add_balance(referrer['id'], REFERRAL_BONUS, 'referral_bonus', f'Yangi foydalanuvchi jalb etildi')
+                referral_bonus = int(self.db.get_setting('referral_bonus', REFERRAL_BONUS))
+                self.db.add_balance(referrer['id'], referral_bonus, 'referral_bonus', f'Yangi foydalanuvchi jalb etildi')
         
         # Foydalanuvchini bazaga qo'shish
         user_id = self.db.create_user(
@@ -389,7 +405,8 @@ class BotopneBot:
         if user_id:
             # Yangi foydalanuvchiga bonus berish
             if referred_by:
-                self.db.add_balance(user_id, REFERRAL_BONUS, 'referral_bonus', f'Referal orqali ro\'yxatdan o\'tish')
+                referral_bonus = int(self.db.get_setting('referral_bonus', REFERRAL_BONUS))
+                self.db.add_balance(user_id, referral_bonus, 'referral_bonus', f'Referal orqali ro\'yxatdan o\'tish')
             
             # Admin foydalanuvchilar uchun admin klaviatura
             if user.id in ADMIN_IDS or user.id in SUPER_ADMIN_IDS:
@@ -498,11 +515,11 @@ class BotopneBot:
             for project in projects:
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"🗳 {project['name']} uchun ovoz berdim",
+                        f"🗳 {project['name']} ovoz berdim✅",
                         callback_data=f"vote_project_{project['id']}"
                     ),
                     InlineKeyboardButton(
-                        f"🔗 {project['name']} havolasini ochish",
+                        f"🔗 {project['name']} ovoz berish❗️",
                         url=project.get('link', '#')  # Agar link bo'lsa ochadi
                     )
                 ])
@@ -553,43 +570,45 @@ class BotopneBot:
         db_user = self.db.get_user(user.id)
         language = db_user['language']
         
-        if db_user['balance'] < MIN_WITHDRAWAL:
+        if db_user['balance'] < int(self.db.get_setting('min_withdrawal', MIN_WITHDRAWAL)):
             await update.message.reply_text(
                 get_message('insufficient_balance', language)
             )
             return MAIN_MENU
         
         # Foiz hisobini avtomatik qilish
-        commission_amount = int(db_user['balance'] * COMMISSION_RATE)
+        commission_rate = float(self.db.get_setting('commission_rate', COMMISSION_RATE))
+        commission_amount = int(db_user['balance'] * commission_rate)
         net_amount = db_user['balance'] - commission_amount
+        
+        method_names = {
+            'card': 'karta raqami',
+            'phone': 'telefon raqami'
+        }
+        
+        format_examples = {
+            'card': 'Masalan: 8600123456789012 (16 xonali raqam)',
+            'phone': 'Masalan: +998901234567 (+998 + 9 xonali raqam)'
+        }
         
         # Ma'lumotlarni ko'rsatish
         withdrawal_info = f"💰 *Balans:* {db_user['balance']:,} so'm\n"
-        withdrawal_info += f"💸 *Komissiya ({int(COMMISSION_RATE * 100)}%):* {commission_amount:,} so'm\n"
+        withdrawal_info += f"💸 *Komissiya ({int(commission_rate * 100)}%):* {commission_amount:,} so'm\n"
         withdrawal_info += f"✅ *Chiqariladigan summa:* {net_amount:,} so'm\n\n"
-        withdrawal_info += f"📱 *Pulni chiqarish uchun quyidagi usullardan birini tanlang:*"
+        withdrawal_info += f"📝 *Iltimos, {method_names.get(method, method)}ni kiriting:*\n"
+        withdrawal_info += f"📋 {format_examples.get(method, '')}"
         
-        # Inline tugmalar bilan klaviatura
-        keyboard = [
-            [
-                InlineKeyboardButton("💳 Karta raqami", callback_data="withdraw_card"),
-                InlineKeyboardButton("📱 Telefon raqami", callback_data="withdraw_phone")
-            ],
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="back")]
-        ]
+        # Context ga ma'lumotlarni saqlash
+        context.user_data['withdrawal_amount'] = db_user['balance']
+        context.user_data['commission_amount'] = commission_amount
+        context.user_data['net_amount'] = net_amount
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
+        await query.edit_message_text(
             withdrawal_info,
             parse_mode='Markdown',
-            reply_markup=reply_markup
+            reply_markup=get_cancel_keyboard()
         )
         
-        # Conversation state ni WITHDRAWAL_ACCOUNT ga o'tkazish uchun
-        # Bu yerda ConversationHandler.END qaytarmaymiz, chunki keyin handle_withdrawal da state o'zgartiramiz
-        
-        # Conversation state ni WITHDRAWAL_ACCOUNT ga o'tkazish
         return WITHDRAWAL_ACCOUNT
     
     async def referral_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -626,11 +645,11 @@ class BotopneBot:
         
         help_text = get_message('help_text', language, **{
             'max_votes': MAX_VOTES_PER_SEASON,
-            'vote_bonus': VOTE_BONUS,
-            'referral_bonus': REFERRAL_BONUS,
-            'referral_vote_bonus': VOTE_BONUS,
-            'min_withdrawal': MIN_WITHDRAWAL,
-            'commission': int(COMMISSION_RATE * 100)
+            'vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
+            'referral_bonus': int(self.db.get_setting('referral_bonus', REFERRAL_BONUS)),
+            'referral_vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
+            'min_withdrawal': int(self.db.get_setting('min_withdrawal', MIN_WITHDRAWAL)),
+            'commission': int(float(self.db.get_setting('commission_rate', COMMISSION_RATE)) * 100)
         })
         
         await update.message.reply_text(help_text)
@@ -717,11 +736,11 @@ class BotopneBot:
         await update.message.reply_text(
             get_message('help_text', language, **{
                 'max_votes': MAX_VOTES_PER_SEASON,
-                'vote_bonus': VOTE_BONUS,
-                'referral_bonus': REFERRAL_BONUS,
-                'referral_vote_bonus': VOTE_BONUS,
-                'min_withdrawal': MIN_WITHDRAWAL,
-                'commission': int(COMMISSION_RATE * 100)
+                'vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
+                'referral_bonus': int(self.db.get_setting('referral_bonus', REFERRAL_BONUS)),
+                'referral_vote_bonus': int(self.db.get_setting('vote_bonus', VOTE_BONUS)),
+                'min_withdrawal': int(self.db.get_setting('min_withdrawal', MIN_WITHDRAWAL)),
+                'commission': int(float(self.db.get_setting('commission_rate', COMMISSION_RATE)) * 100)
             })
         )
     
@@ -1312,6 +1331,179 @@ class BotopneBot:
             reply_markup=get_back_keyboard()
         )
     
+    # ==================== PUL BERISH BOSHQARUVI ====================
+    
+    async def admin_payment_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin pul berish menyusi"""
+        user = update.effective_user
+        
+        # Admin huquqlarini tekshirish
+        if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
+            await update.message.reply_text(get_message('admin_access_denied', 'uz'))
+            return
+        
+        await update.message.reply_text(
+            "💰 *Pul berish boshqaruvi*\n\n"
+            "Quyidagi funksiyalardan birini tanlang:",
+            parse_mode='Markdown',
+            reply_markup=get_payment_management_keyboard()
+        )
+    
+    async def admin_payment_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin pul berish sozlamalari"""
+        user = update.effective_user
+        
+        # Admin huquqlarini tekshirish
+        if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
+            await update.callback_query.answer("Admin huquqi yo'q!")
+            return
+        
+        # Hozirgi sozlamalarni olish
+        settings = self.db.get_settings_for_admin()
+        
+        message = "⚙️ *Hozirgi sozlamalar:*\n\n"
+        for setting in settings:
+            if setting['key'] == 'commission_rate':
+                value = f"{float(setting['value']) * 100}%"
+            else:
+                value = f"{int(setting['value']):,} so'm"
+            
+            message += f"• **{setting['description']}:** {value}\n"
+        
+        message += "\nSozlamani o'zgartirish uchun tugmalardan birini bosing:"
+        
+        await update.callback_query.edit_message_text(
+            message,
+            parse_mode='Markdown',
+            reply_markup=get_payment_settings_keyboard()
+        )
+    
+    async def admin_setting_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, setting_key: str):
+        """Admin sozlama kiritish"""
+        user = update.effective_user
+        
+        # Admin huquqlarini tekshirish
+        if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
+            await update.callback_query.answer("Admin huquqi yo'q!")
+            return
+        
+        # Sozlama ma'lumotlarini olish
+        setting_info = {
+            'referral_bonus': 'Referal uchun bonus puli (so\'m)',
+            'vote_bonus': 'Ovoz berish uchun bonus puli (so\'m)',
+            'min_withdrawal': 'Minimal yechish miqdori (so\'m)',
+            'commission_rate': 'Komissiya foizi (0.01 = 1%)'
+        }
+        
+        context.user_data['editing_setting'] = setting_key
+        
+        await update.callback_query.edit_message_text(
+            f"✏️ *{setting_info[setting_key]}*\n\n"
+            f"Yangi qiymatni kiriting:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_setting")
+            ]])
+        )
+        
+        return 'WAITING_SETTING_VALUE'
+    
+    async def admin_setting_value_received(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin sozlama qiymati qabul qilindi"""
+        user = update.effective_user
+        setting_key = context.user_data.get('editing_setting')
+        
+        if not setting_key:
+            await update.message.reply_text("Xato: sozlama topilmadi!")
+            return ConversationHandler.END
+        
+        try:
+            new_value = update.message.text.strip()
+            
+            # Qiymatni tekshirish
+            if setting_key == 'commission_rate':
+                rate = float(new_value)
+                if rate < 0 or rate > 1:
+                    await update.message.reply_text("❌ Xato: Komissiya foizi 0-1 orasida bo'lishi kerak!")
+                    return ConversationHandler.END
+                display_value = f"{rate * 100}%"
+            else:
+                amount = int(new_value)
+                if amount < 0:
+                    await update.message.reply_text("❌ Xato: Miqdor manfiy bo'lishi mumkin emas!")
+                    return ConversationHandler.END
+                display_value = f"{amount:,} so'm"
+            
+            # Sozlamani saqlash
+            if self.db.update_setting(setting_key, new_value, user.id):
+                await update.message.reply_text(
+                    f"✅ Sozlama muvaffaqiyatli yangilandi!\n\n"
+                    f"**Yangi qiymat:** {display_value}",
+                    parse_mode='Markdown',
+                    reply_markup=get_payment_settings_keyboard()
+                )
+            else:
+                await update.message.reply_text("❌ Xato: Sozlama yangilanmadi!")
+            
+            # Conversation state ni tozalash
+            context.user_data.pop('editing_setting', None)
+            return ConversationHandler.END
+            
+        except ValueError:
+            await update.message.reply_text("❌ Xato: Noto'g'ri qiymat kiritildi!")
+            return ConversationHandler.END
+    
+    async def admin_pay_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin foydalanuvchilarga pul berish"""
+        user = update.effective_user
+        
+        # Admin huquqlarini tekshirish
+        if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
+            await update.callback_query.answer("Admin huquqi yo'q!")
+            return
+        
+        # Pending balansi bo'lgan foydalanuvchilarni olish
+        users_with_pending = self.db.get_users_with_pending_balance()
+        
+        if not users_with_pending:
+            await update.callback_query.edit_message_text(
+                "ℹ️ Pending balansi bo'lgan foydalanuvchilar yo'q!",
+                reply_markup=get_payment_management_keyboard()
+            )
+            return
+        
+        message = "💰 *Pul berish uchun foydalanuvchilar:*\n\n"
+        keyboard = []
+        
+        for user_data in users_with_pending:
+            message += f"👤 **{user_data['first_name']}**\n"
+            message += f"📱 ID: `{user_data['telegram_id']}`\n"
+            message += f"💰 Pending: {user_data['pending_balance']:,} so'm\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"💰 {user_data['first_name']} ga pul berish",
+                    callback_data=f"pay_user_{user_data['id']}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="admin_payment_back")])
+        
+        await update.callback_query.edit_message_text(
+            message,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    async def admin_payment_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin pul berish orqaga qaytish"""
+        await update.callback_query.edit_message_text(
+            "💰 *Pul berish boshqaruvi*\n\n"
+            "Quyidagi funksiyalardan birini tanlang:",
+            parse_mode='Markdown',
+            reply_markup=get_payment_management_keyboard()
+        )
+    
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Tugma bosilganda"""
         query = update.callback_query
@@ -1361,6 +1553,17 @@ class BotopneBot:
             await self.delete_project_confirmed(update, context)
         elif data == 'cancel_delete_project':
             await self.cancel_delete_project(update, context)
+        elif data == 'admin_payment_settings':
+            await self.admin_payment_settings(update, context)
+        elif data.startswith('admin_setting_'):
+            setting_key = data.replace('admin_setting_', '')
+            await self.admin_setting_input(update, context, setting_key)
+        elif data == 'admin_pay_users':
+            await self.admin_pay_users(update, context)
+        elif data == 'admin_payment_back':
+            await self.admin_payment_back(update, context)
+        elif data == 'cancel_setting':
+            await self.admin_payment_back(update, context)
         elif data == 'back':
             await query.answer()
             await query.edit_message_text(
@@ -1646,11 +1849,12 @@ class BotopneBot:
                 return
             
             # Ovoz berishni tasdiqlash va bonus berish
-            success = self.db.add_balance(db_user['id'], VOTE_BONUS, 'vote_bonus', f'Loyiha uchun ovoz berish tasdiqlandi')
+            vote_bonus = int(self.db.get_setting('vote_bonus', VOTE_BONUS))
+            success = self.db.add_balance(db_user['id'], vote_bonus, 'vote_bonus', f'Loyiha uchun ovoz berish tasdiqlandi')
             
             # Ovoz berishni balance_history ga qo'shish (payment type bilan)
             if success:
-                self.db.add_payment_record(db_user['id'], VOTE_BONUS, 'payment', f'Loyiha uchun ovoz berish tasdiqlandi', 'approved')
+                self.db.add_payment_record(db_user['id'], vote_bonus, 'payment', f'Loyiha uchun ovoz berish tasdiqlandi', 'approved')
             
             if success:
                 # Foydalanuvchiga xabar yuborish
@@ -1658,7 +1862,7 @@ class BotopneBot:
                     await self.application.bot.send_message(
                         chat_id=user_id,
                         text=f"🎉 *Ovoz berishingiz tasdiqlandi!*\n\n"
-                             f"💰 *Bonus:* {VOTE_BONUS} so'm\n"
+                             f"💰 *Bonus:* {vote_bonus} so'm\n"
                              f"✅ *Hisobingiz to'ldirildi!*\n\n"
                              f"Rahmat! Loyihani qo'llab-quvvatlaganingiz uchun!",
                         parse_mode='Markdown'
@@ -1670,7 +1874,7 @@ class BotopneBot:
                 await query.edit_message_text(
                     f"✅ *Ovoz berish tasdiqlandi!*\n\n"
                     f"👤 Foydalanuvchi: {user_id}\n"
-                    f"💰 Bonus: {VOTE_BONUS} so'm\n"
+                    f"💰 Bonus: {vote_bonus} so'm\n"
                     f"✅ Hisob to'ldirildi",
                     parse_mode='Markdown'
                 )
@@ -1749,7 +1953,7 @@ class BotopneBot:
         
         if success:
             await query.edit_message_text(
-                get_message('vote_success', language, bonus=VOTE_BONUS),
+                get_message('vote_success', language, bonus=int(self.db.get_setting('vote_bonus', VOTE_BONUS))),
                 reply_markup=get_back_keyboard()
             )
         else:
@@ -1772,7 +1976,8 @@ class BotopneBot:
         language = db_user['language']
         
         # Foiz hisobini avtomatik qilish
-        commission_amount = int(db_user['balance'] * COMMISSION_RATE)
+        commission_rate = float(self.db.get_setting('commission_rate', COMMISSION_RATE))
+        commission_amount = int(db_user['balance'] * commission_rate)
         net_amount = db_user['balance'] - commission_amount
         
         method_names = {
@@ -1787,7 +1992,7 @@ class BotopneBot:
         
         # Ma'lumotlarni ko'rsatish
         withdrawal_info = f"💰 *Balans:* {db_user['balance']:,} so'm\n"
-        withdrawal_info += f"💸 *Komissiya ({int(COMMISSION_RATE * 100)}%):* {commission_amount:,} so'm\n"
+        withdrawal_info += f"💸 *Komissiya ({int(commission_rate * 100)}%):* {commission_amount:,} so'm\n"
         withdrawal_info += f"✅ *Chiqariladigan summa:* {net_amount:,} so'm\n\n"
         withdrawal_info += f"📝 *Iltimos, {method_names.get(method, method)}ni kiriting:*\n"
         withdrawal_info += f"📋 {format_examples.get(method, '')}"

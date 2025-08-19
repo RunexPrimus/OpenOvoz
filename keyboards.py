@@ -91,15 +91,15 @@ def get_admin_keyboard(language='uz'):
     if language == 'uz':
         keyboard = [
             ['📊 Statistikalar', '🗳 Mavsum & Loyihalar'],
-            ['📊 Reytinglar', '📢 Broadcast'],
-            ['📝 Yangiliklar'],
+            ['💰 Pul berish', '📊 Reytinglar'],
+            ['📢 Broadcast', '📝 Yangiliklar'],
             ['🔙 Asosiy menyu']
         ]
     else:
         keyboard = [
             ['📊 Статистика', '🗳 Сезоны & Проекты'],
-            ['📊 Рейтинги', '📢 Рассылка'],
-            ['📝 Новости'],
+            ['💰 Выплаты', '📊 Рейтинги'],
+            ['📢 Рассылка', '📝 Новости'],
             ['🔙 Главное меню']
         ]
     
@@ -283,5 +283,57 @@ def get_news_cancel_keyboard():
     """Yangilik yaratishni bekor qilish klaviaturasi"""
     keyboard = [
         [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_news")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_admin_withdrawal_action_keyboard(withdrawal_id):
+    """Pul chiqarish so'rovini boshqarish klaviaturasi"""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_withdrawal_{withdrawal_id}"),
+            InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_withdrawal_{withdrawal_id}")
+        ],
+        [InlineKeyboardButton("📝 Izoh qo'shish", callback_data=f"note_withdrawal_{withdrawal_id}")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="admin_withdrawals_back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_payment_management_keyboard():
+    """Pul berish boshqaruvi klaviaturasi"""
+    keyboard = [
+        [
+            InlineKeyboardButton("💰 Pul berish", callback_data="admin_pay_users"),
+            InlineKeyboardButton("⚙️ Sozlamalar", callback_data="admin_payment_settings")
+        ],
+        [
+            InlineKeyboardButton("📊 Tarix", callback_data="admin_payment_history"),
+            InlineKeyboardButton("📋 Hisobot", callback_data="admin_payment_report")
+        ],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="admin_back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_payment_settings_keyboard():
+    """Pul berish sozlamalari klaviaturasi"""
+    keyboard = [
+        [
+            InlineKeyboardButton("👥 Referal bonusi", callback_data="admin_setting_referral_bonus"),
+            InlineKeyboardButton("🗳 Ovoz bonusi", callback_data="admin_setting_vote_bonus")
+        ],
+        [
+            InlineKeyboardButton("💸 Minimal yechish", callback_data="admin_setting_min_withdrawal"),
+            InlineKeyboardButton("📊 Komissiya %", callback_data="admin_setting_commission_rate")
+        ],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="admin_payment_back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_setting_confirmation_keyboard(setting_key):
+    """Sozlama tasdiqlash klaviaturasi"""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"confirm_setting_{setting_key}"),
+            InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_setting")
+        ]
     ]
     return InlineKeyboardMarkup(keyboard)

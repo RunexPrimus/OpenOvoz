@@ -99,16 +99,38 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 amount INTEGER NOT NULL,
-                commission INTEGER NOT NULL,
-                net_amount INTEGER NOT NULL,
                 method TEXT NOT NULL,
-                account_details TEXT NOT NULL,
+                account TEXT NOT NULL,
                 status TEXT DEFAULT 'pending',
-                admin_notes TEXT,
+                admin_note TEXT,
+                processed_by INTEGER,
                 processed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                FOREIGN KEY (processed_by) REFERENCES users (id)
             )
+        ''')
+        
+        # Sozlamalar jadvali (admin tomonidan o'zgartiriladigan)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT UNIQUE NOT NULL,
+                value TEXT NOT NULL,
+                description TEXT,
+                updated_by INTEGER,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (updated_by) REFERENCES users (id)
+            )
+        ''')
+        
+        # Dastlabki sozlamalarni qo'shish
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value, description) VALUES 
+            ('referral_bonus', '1000', 'Referal uchun bonus puli'),
+            ('vote_bonus', '25000', 'Ovoz berish uchun bonus puli'),
+            ('min_withdrawal', '20000', 'Minimal yechish miqdori'),
+            ('commission_rate', '0.02', 'Komissiya foizi (0.01 = 1%)')
         ''')
         
         # Balans tarixi
@@ -1106,5 +1128,95 @@ class Database:
         except Exception as e:
             print(f"Loyihani olishda xato: {e}")
             return None
+        finally:
+            conn.close()
+
+    # ==================== SOZLAMALAR BOSHQARUVI ====================
+    
+    def get_setting(self, key, default=None):
+        """Sozlama qiymatini olish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            result = cursor.fetchone()
+            return result['value'] if result else default
+        except Exception as e:
+            print(f"Sozlama olishda xato: {e}")
+            return default
+        finally:
+            conn.close()
+    
+    def update_setting(self, key, value, admin_id):
+        """Sozlama qiymatini yangilash"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE settings 
+                SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE key = ?
+            """, (value, admin_id, key))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                return True
+            return False
+        except Exception as e:
+            print(f"Sozlama yangilashda xato: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def get_all_settings(self):
+        """Barcha sozlamalarni olish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.*, u.first_name, u.last_name 
+                FROM settings s 
+                LEFT JOIN users u ON s.updated_by = u.id 
+                ORDER BY s.key
+            """)
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Barcha sozlamalarni olishda xato: {e}")
+            return []
+        finally:
+            conn.close()
+    
+    def get_settings_for_admin(self):
+        """Admin uchun sozlamalar ro'yxati"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT key, value, description, updated_at 
+                FROM settings 
+                ORDER BY key
+            """)
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Admin uchun sozlamalarni olishda xato: {e}")
+            return []
+        finally:
+            conn.close()
+    
+    def get_users_with_pending_balance(self):
+        """Pending balansi bo'lgan foydalanuvchilarni olish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, telegram_id, first_name, last_name, pending_balance
+                FROM users 
+                WHERE pending_balance > 0 AND is_active = 1
+                ORDER BY pending_balance DESC
+            """)
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Pending balansi bo'lgan foydalanuvchilarni olishda xato: {e}")
+            return []
         finally:
             conn.close()

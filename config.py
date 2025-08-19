@@ -16,15 +16,15 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_DB = int(os.getenv('REDIS_DB', 0))
 
-# Bonus va komissiya
-REFERRAL_BONUS = 1000  # Referal uchun bonus
-VOTE_BONUS = 25000       # Ovoz berish uchun bonus
-MIN_WITHDRAWAL = 20000 # Minimal yechish miqdori
-COMMISSION_RATE = 0.02 # 2% komissiya
+# Bonus va komissiya (database dan olinadi, default qiymatlar)
+REFERRAL_BONUS = 1000  # Referal uchun bonus (default)
+VOTE_BONUS = 25000       # Ovoz berish uchun bonus (default)
+MIN_WITHDRAWAL = 20000 # Minimal yechish miqdori (default)
+COMMISSION_RATE = 0.02 # 2% komissiya (default)
 
 # Ovoz berish cheklovlari
-MAX_VOTES_PER_SEASON = 3  # Har mavsumda maksimal ovozlar
-VOTE_COOLDOWN = 3600       # Ovozlar orasidagi vaqt (sekund)
+MAX_VOTES_PER_SEASON = 10  # Har mavsumda maksimal ovozlar
+VOTE_COOLDOWN = 3600      # Ovozlar orasidagi vaqt (sekund)
 
 # Til sozlamalari
 SUPPORTED_LANGUAGES = ['uz', 'ru']
