@@ -214,6 +214,7 @@ class BotopneBot:
         # Pul berish sozlamalari conversation handler
         payment_settings_conv_handler = ConversationHandler(
             entry_points=[
+                CallbackQueryHandler(self.admin_payment_settings, pattern='^admin_payment_settings$'),
                 CallbackQueryHandler(self.admin_setting_input, pattern='^admin_setting_')
             ],
             states={
@@ -232,6 +233,8 @@ class BotopneBot:
         self.application.add_handler(screenshot_conv_handler)
         # Loyiha tahrirlash conversation handlerni qo'shamiz
         self.application.add_handler(edit_project_conv_handler)
+        # Pul berish sozlamalari conversation handlerni umumiy callbackdan OLDIN qo'shamiz
+        self.application.add_handler(payment_settings_conv_handler)
         # Umumiy callback handler oxirroqda turadi, aks holda yuqoridagi conversation ishlamay qoladi
         self.application.add_handler(callback_handler)
         # self.application.add_handler(admin_conv_handler)  # Conversation handler emas
@@ -251,7 +254,6 @@ class BotopneBot:
         self.application.add_handler(edit_project_conv_handler)
         self.application.add_handler(broadcast_conv_handler)
         self.application.add_handler(news_conv_handler)
-        self.application.add_handler(payment_settings_conv_handler)
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Botni ishga tushirish"""
@@ -749,16 +751,28 @@ class BotopneBot:
         
         # Admin huquqlarini tekshirish
         if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
-            await update.message.reply_text(get_message('admin_access_denied', 'uz'))
-            return
+            if update.callback_query:
+                await update.callback_query.answer("Admin huquqingiz yo'q!")
+                return
+            else:
+                await update.message.reply_text(get_message('admin_access_denied', 'uz'))
+                return
         
         db_user = self.db.get_user(user.id)
         language = db_user['language']
         
-        await update.message.reply_text(
-            get_message('admin_menu', language),
-            reply_markup=get_admin_keyboard(language)
-        )
+        # Agar callback query bo'lsa, mavjud xabarni tahrirlash
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                get_message('admin_menu', language),
+                reply_markup=get_admin_keyboard(language)
+            )
+        else:
+            # Agar oddiy xabar bo'lsa, yangi xabar yuborish
+            await update.message.reply_text(
+                get_message('admin_menu', language),
+                reply_markup=get_admin_keyboard(language)
+            )
         
         return ADMIN_MENU
     
@@ -766,33 +780,59 @@ class BotopneBot:
         """Admin statistikalari"""
         user = update.effective_user
         if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
-            await update.message.reply_text(get_message('admin_access_denied', 'uz'))
-            return
+            if update.callback_query:
+                await update.callback_query.answer("Admin huquqingiz yo'q!")
+                return
+            else:
+                await update.message.reply_text(get_message('admin_access_denied', 'uz'))
+                return
+        
         stats = self.db.get_statistics()
         stats_text = get_message('statistics_title', 'uz', **stats)
-        await update.message.reply_text(
-            stats_text,
-            reply_markup=get_back_keyboard()
-        )
+        
+        # Agar callback query bo'lsa, mavjud xabarni tahrirlash
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                stats_text,
+                reply_markup=get_back_keyboard()
+            )
+        else:
+            # Agar oddiy xabar bo'lsa, yangi xabar yuborish
+            await update.message.reply_text(
+                stats_text,
+                reply_markup=get_back_keyboard()
+            )
     
     async def admin_ratings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin reytinglari - eng ko'p ovoz bergan foydalanuvchilar"""
         user = update.effective_user
         if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
-            await update.message.reply_text(get_message('admin_access_denied', 'uz'))
-            return
+            if update.callback_query:
+                await update.callback_query.answer("Admin huquqingiz yo'q!")
+                return
+            else:
+                await update.message.reply_text(get_message('admin_access_denied', 'uz'))
+                return
         
         db_user = self.db.get_user(user.id)
         language = db_user['language']
         
         top_voters = self.db.get_top_voters(10)
         if not top_voters:
-            await update.message.reply_text(
-                "📊 *Reytinglar*\n\n"
-                "Hali hech kim ovoz bermagan.",
-                parse_mode='Markdown',
-                reply_markup=get_back_keyboard()
-            )
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    "📊 *Reytinglar*\n\n"
+                    "Hali hech kim ovoz bermagan.",
+                    parse_mode='Markdown',
+                    reply_markup=get_back_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    "📊 *Reytinglar*\n\n"
+                    "Hali hech kim ovoz bermagan.",
+                    parse_mode='Markdown',
+                    reply_markup=get_back_keyboard()
+                )
             return
         
         ratings_text = "📊 *Eng ko'p ovoz bergan foydalanuvchilar*\n\n"
@@ -805,27 +845,49 @@ class BotopneBot:
             ratings_text += f"   🆔 ID: `{telegram_id}`\n"
             ratings_text += f"   🗳 Ovozlar: {vote_count} ta\n\n"
         
-        await update.message.reply_text(
-            ratings_text,
-            parse_mode='Markdown',
-            reply_markup=get_back_keyboard()
-        )
+        # Agar callback query bo'lsa, mavjud xabarni tahrirlash
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                ratings_text,
+                parse_mode='Markdown',
+                reply_markup=get_back_keyboard()
+            )
+        else:
+            # Agar oddiy xabar bo'lsa, yangi xabar yuborish
+            await update.message.reply_text(
+                ratings_text,
+                parse_mode='Markdown',
+                reply_markup=get_back_keyboard()
+            )
 
     async def start_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Broadcast xabar yuborishni boshlash"""
         user = update.effective_user
         if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
-            await update.message.reply_text(get_message('admin_access_denied', 'uz'))
-            return
+            if update.callback_query:
+                await update.callback_query.answer("Admin huquqingiz yo'q!")
+                return
+            else:
+                await update.message.reply_text(get_message('admin_access_denied', 'uz'))
+                return
         
         db_user = self.db.get_user(user.id)
         language = db_user['language']
         
-        await update.message.reply_text(
-            get_message('broadcast_start', language),
-            parse_mode='Markdown',
-            reply_markup=get_broadcast_cancel_keyboard()
-        )
+        # Agar callback query bo'lsa, mavjud xabarni tahrirlash
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                get_message('broadcast_start', language),
+                parse_mode='Markdown',
+                reply_markup=get_broadcast_cancel_keyboard()
+            )
+        else:
+            # Agar oddiy xabar bo'lsa, yangi xabar yuborish
+            await update.message.reply_text(
+                get_message('broadcast_start', language),
+                parse_mode='Markdown',
+                reply_markup=get_broadcast_cancel_keyboard()
+            )
         
         return BROADCAST_MESSAGE
 
@@ -1352,6 +1414,9 @@ class BotopneBot:
         """Admin pul berish sozlamalari"""
         user = update.effective_user
         
+        # Callback query ni javoblash
+        await update.callback_query.answer()
+        
         # Admin huquqlarini tekshirish
         if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
             await update.callback_query.answer("Admin huquqi yo'q!")
@@ -1362,10 +1427,19 @@ class BotopneBot:
         
         message = "⚙️ *Hozirgi sozlamalar:*\n\n"
         for setting in settings:
-            if setting['key'] == 'commission_rate':
+            if setting['key'] == 'COMMISSION_RATE':
                 value = f"{float(setting['value']) * 100}%"
-            else:
+            elif setting['key'] in ['REFERRAL_BONUS', 'VOTE_BONUS', 'MIN_WITHDRAWAL']:
                 value = f"{int(setting['value']):,} so'm"
+            else:
+                # Boshqa sozlamalar uchun xavfsiz formatlash
+                try:
+                    if '.' in str(setting['value']):
+                        value = f"{float(setting['value'])}"
+                    else:
+                        value = f"{int(setting['value']):,}"
+                except (ValueError, TypeError):
+                    value = str(setting['value'])
             
             message += f"• **{setting['description']}:** {value}\n"
         
@@ -1380,6 +1454,9 @@ class BotopneBot:
     async def admin_setting_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin sozlama kiritish"""
         user = update.effective_user
+        
+        # Callback query ni javoblash
+        await update.callback_query.answer()
         
         # Admin huquqlarini tekshirish
         if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
@@ -1557,21 +1634,17 @@ class BotopneBot:
             await self.cancel_delete_project(update, context)
         elif data == 'admin_payment_settings':
             await self.admin_payment_settings(update, context)
-        elif data.startswith('admin_setting_'):
-            setting_key = data.replace('admin_setting_', '')
-            await self.admin_setting_input(update, context, setting_key)
+        # admin_setting_ callbacks are handled by the payment_settings_conv_handler
+        # elif data.startswith('admin_setting_'):
+        #     setting_key = data.replace('admin_setting_', '')
+        #     await self.admin_setting_input(update, context, setting_key)
         elif data == 'admin_pay_users':
             await self.admin_pay_users(update, context)
         elif data == 'admin_payment_back':
             await self.admin_payment_back(update, context)
-        elif data == 'cancel_setting':
-            await self.admin_payment_back(update, context)
-        elif data == 'back':
-            await query.answer()
-            await query.edit_message_text(
-                get_message('back_to_main', language),
-                reply_markup=get_back_keyboard()
-            )
+        # cancel_setting is handled by the payment_settings_conv_handler fallback
+        # elif data == 'cancel_setting':
+        #     await self.admin_payment_back(update, context)
     
     async def handle_approved_project_vote(self, update: Update, context: ContextTypes.DEFAULT_TYPE, project_id: int | None = None):
         """Yangi loyihalar uchun ovoz berish"""
@@ -3227,26 +3300,9 @@ class BotopneBot:
 
     def run(self):
         """Botni ishga tushirish"""
-        # Railway uchun webhook yoki polling
-        import os
-        port = int(os.environ.get('PORT', 8080))
-        
-        # Railway da ishlayotganda webhook ishlatamiz
-        if os.environ.get('RAILWAY_ENVIRONMENT'):
-            # Webhook sozlamalari
-            webhook_url = os.environ.get('WEBHOOK_URL')
-            if webhook_url:
-                self.application.run_webhook(
-                    listen='0.0.0.0',
-                    port=port,
-                    webhook_url=webhook_url
-                )
-            else:
-                # Webhook URL yo'q bo'lsa polling ishlatamiz
-                self.application.run_polling()
-        else:
-            # Lokal ishlayotganda polling ishlatamiz
-            self.application.run_polling()
+        # Faqat polling rejimida ishlatamiz
+        print("Bot polling rejimida ishga tushirilmoqda...")
+        self.application.run_polling()
 
 if __name__ == '__main__':
     bot = BotopneBot()

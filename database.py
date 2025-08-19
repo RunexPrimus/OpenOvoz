@@ -127,10 +127,10 @@ class Database:
         # Dastlabki sozlamalarni qo'shish
         cursor.execute('''
             INSERT OR IGNORE INTO settings (key, value, description) VALUES 
-            ('referral_bonus', '1000', 'Referal uchun bonus puli'),
-            ('vote_bonus', '25000', 'Ovoz berish uchun bonus puli'),
-            ('min_withdrawal', '20000', 'Minimal yechish miqdori'),
-            ('commission_rate', '0.02', 'Komissiya foizi (0.01 = 1%)')
+            ('REFERRAL_BONUS', '1000', 'Referal uchun bonus puli'),
+            ('VOTE_BONUS', '25000', 'Ovoz berish uchun bonus puli'),
+            ('MIN_WITHDRAWAL', '20000', 'Minimal yechish miqdori'),
+            ('COMMISSION_RATE', '0.02', 'Komissiya foizi (0.01 = 1%)')
         ''')
         
         # Balans tarixi
