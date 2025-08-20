@@ -1022,19 +1022,31 @@ class DatabasePostgreSQL:
     def create_excel_report(self):
         """Excel hisobot yaratish"""
         try:
-            import openpyxl
-            from openpyxl.styles import Font, PatternFill, Alignment
-            from openpyxl.utils import get_column_letter
+            print("Excel hisobot yaratish boshlandi...")
+            
+            # openpyxl paketini tekshirish
+            try:
+                import openpyxl
+                from openpyxl.styles import Font, PatternFill, Alignment
+                from openpyxl.utils import get_column_letter
+                print("openpyxl paketi muvaffaqiyatli import qilindi")
+            except ImportError as e:
+                print(f"openpyxl paketini import qilishda xato: {e}")
+                return None
             
             # Ma'lumotlarni olish
+            print("Ma'lumotlar yig'ilmoqda...")
             data = self.get_comprehensive_report_data()
+            print(f"Ma'lumotlar yig'ildi: {len(data)} ta jadval")
             
             # Yangi Excel fayl yaratish
+            print("Excel fayl yaratilmoqda...")
             wb = openpyxl.Workbook()
             
             # 1. Foydalanuvchilar sahifasi
             ws_users = wb.active
             ws_users.title = "Foydalanuvchilar"
+            print("Foydalanuvchilar sahifasi yaratildi")
             
             # Sarlavhalar
             headers = [
@@ -1051,6 +1063,7 @@ class DatabasePostgreSQL:
                 cell.alignment = Alignment(horizontal="center")
             
             # Ma'lumotlarni qo'shish
+            print(f"Foydalanuvchilar ma'lumotlari qo'shilmoqda: {len(data['users'])} ta")
             for row, user in enumerate(data['users'], 2):
                 ws_users.cell(row=row, column=1, value=user[0])  # ID
                 ws_users.cell(row=row, column=2, value=user[1])  # Telegram ID
@@ -1069,8 +1082,11 @@ class DatabasePostgreSQL:
                 ws_users.cell(row=row, column=15, value=user[14] or 0)  # Total votes
                 ws_users.cell(row=row, column=16, value=user[15] or 0)  # Seasons voted
             
+            print("Foydalanuvchilar ma'lumotlari qo'shildi")
+            
             # 2. Ovozlar sahifasi
             ws_votes = wb.create_sheet("Ovozlar")
+            print("Ovozlar sahifasi yaratildi")
             
             vote_headers = ['ID', 'Foydalanuvchi ID', 'Telegram ID', 'Ism', 'Familiya', 'Loyiha', 'Mavsum', 'Sana']
             for col, header in enumerate(vote_headers, 1):
@@ -1089,8 +1105,11 @@ class DatabasePostgreSQL:
                 ws_votes.cell(row=row, column=7, value=vote[6] or '')  # Season name
                 ws_votes.cell(row=row, column=8, value=str(vote[7])[:19] if vote[7] else '')  # Vote date
             
+            print("Ovozlar ma'lumotlari qo'shildi")
+            
             # 3. Pul chiqarish sahifasi
             ws_withdrawals = wb.create_sheet("Pul chiqarish")
+            print("Pul chiqarish sahifasi yaratildi")
             
             withdrawal_headers = ['ID', 'Foydalanuvchi ID', 'Telegram ID', 'Ism', 'Familiya', 'Telefon', 'Miqdor', 'Komissiya', 'Olinadigan', 'Usul', 'Ma\'lumotlar', 'Holat', 'Sana', 'Tasdiqlangan']
             for col, header in enumerate(withdrawal_headers, 1):
@@ -1115,8 +1134,11 @@ class DatabasePostgreSQL:
                 ws_withdrawals.cell(row=row, column=13, value=str(withdrawal[12])[:19] if withdrawal[12] else '')  # Created at
                 ws_withdrawals.cell(row=row, column=14, value=str(withdrawal[13])[:19] if withdrawal[13] else '')  # Processed at
             
+            print("Pul chiqarish ma'lumotlari qo'shildi")
+            
             # 4. Balans tarixi sahifasi
             ws_balance = wb.create_sheet("Balans tarixi")
+            print("Balans tarixi sahifasi yaratildi")
             
             balance_headers = ['ID', 'Foydalanuvchi ID', 'Telegram ID', 'Ism', 'Familiya', 'Miqdor', 'Turi', 'Izoh', 'Holat', 'Sana']
             for col, header in enumerate(balance_headers, 1):
@@ -1137,8 +1159,11 @@ class DatabasePostgreSQL:
                 ws_balance.cell(row=row, column=9, value=balance[8] or '')  # Status
                 ws_balance.cell(row=row, column=10, value=str(balance[9])[:19] if balance[9] else '')  # Created at
             
+            print("Balans tarixi ma'lumotlari qo'shildi")
+            
             # 5. Loyihalar sahifasi
             ws_projects = wb.create_sheet("Loyihalar")
+            print("Loyihalar sahifasi yaratildi")
             
             project_headers = ['ID', 'Nomi', 'Budjet', 'Hudud', 'Holat', 'Mavsum', 'Ovozlar soni', 'Yaratilgan']
             for col, header in enumerate(project_headers, 1):
@@ -1157,8 +1182,11 @@ class DatabasePostgreSQL:
                 ws_projects.cell(row=row, column=7, value=project[6] or 0)  # Total votes
                 ws_projects.cell(row=row, column=8, value=str(project[7])[:19] if project[7] else '')  # Created at
             
+            print("Loyihalar ma'lumotlari qo'shildi")
+            
             # 6. Tasdiqlangan loyihalar sahifasi
             ws_approved = wb.create_sheet("Tasdiqlangan loyihalar")
+            print("Tasdiqlangan loyihalar sahifasi yaratildi")
             
             approved_headers = ['ID', 'Nomi', 'Havola', 'Holat', 'Tasdiqlagan', 'Tasdiqlangan', 'Yaratilgan']
             for col, header in enumerate(approved_headers, 1):
@@ -1176,7 +1204,10 @@ class DatabasePostgreSQL:
                 ws_approved.cell(row=row, column=6, value=str(approved[5])[:19] if approved[5] else '')  # Approved at
                 ws_approved.cell(row=row, column=7, value=str(approved[6])[:19] if approved[6] else '')  # Created at
             
+            print("Tasdiqlangan loyihalar ma'lumotlari qo'shildi")
+            
             # Sütunlarni avtomatik o'lchamlash
+            print("Sütunlarni avtomatik o'lchamlash...")
             for ws in [ws_users, ws_votes, ws_withdrawals, ws_balance, ws_projects, ws_approved]:
                 for column in ws.columns:
                     max_length = 0
@@ -1190,16 +1221,23 @@ class DatabasePostgreSQL:
                     adjusted_width = min(max_length + 2, 50)
                     ws.column_dimensions[column_letter].width = adjusted_width
             
+            print("Sütunlar o'lchamlandi")
+            
             # Excel faylni saqlash
             filename = f"botopne_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            print(f"Excel fayl saqlanmoqda: {filename}")
             wb.save(filename)
-            print(f"Excel hisobot yaratildi: {filename}")
+            print(f"Excel hisobot muvaffaqiyatli yaratildi: {filename}")
             
             return filename
             
-        except ImportError:
-            print("openpyxl paketi topilmadi. Excel hisobot yaratish uchun: pip install openpyxl")
+        except ImportError as e:
+            print(f"openpyxl paketi topilmadi: {e}")
+            print("Excel hisobot yaratish uchun: pip install openpyxl")
             return None
         except Exception as e:
             print(f"Excel hisobot yaratishda xato: {e}")
+            print(f"Xato turi: {type(e).__name__}")
+            import traceback
+            print(f"Xato izi: {traceback.format_exc()}")
             return None

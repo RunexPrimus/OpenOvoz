@@ -3377,25 +3377,60 @@ class BotopneBot:
         language = db_user['language']
         
         # Hisobot yaratishni boshlash xabari
-        await update.message.reply_text(
+        status_message = await update.message.reply_text(
             "📋 *Hisobot yaratilmoqda...*\n\n"
             "⏳ Ma'lumotlar yig'ilmoqda...",
             parse_mode='Markdown'
         )
         
         try:
+            print(f"Hisobot yaratish boshlandi - Admin: {user.id}")
+            
             # Excel fayl yaratish (database dan)
+            print("Database dan Excel hisobot yaratish so'ralmoqda...")
             filename = self.db.create_excel_report()
             
             if not filename:
-                await update.message.reply_text(
+                print("Excel fayl yaratilmadi - filename None")
+                await status_message.edit_text(
                     "❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
-                    "Xato: Excel fayl yaratilmadi",
+                    "Xato: Excel fayl yaratilmadi\n\n"
+                    "🔍 *Muammo sababi:*\n"
+                    "• Database ulanish muammosi\n"
+                    "• openpyxl paketi topilmagan\n"
+                    "• Ma'lumotlar bazasi bo'sh",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            print(f"Excel fayl yaratildi: {filename}")
+            
+            # Fayl mavjudligini tekshirish
+            import os
+            if not os.path.exists(filename):
+                print(f"Fayl topilmadi: {filename}")
+                await status_message.edit_text(
+                    "❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
+                    "Xato: Excel fayl yaratildi, lekin topilmadi",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            # Fayl hajmini tekshirish
+            file_size = os.path.getsize(filename)
+            print(f"Fayl hajmi: {file_size} bayt")
+            
+            if file_size == 0:
+                print("Fayl bo'sh")
+                await status_message.edit_text(
+                    "❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
+                    "Xato: Excel fayl bo'sh yaratildi",
                     parse_mode='Markdown'
                 )
                 return
             
             # Excel faylni yuborish
+            print("Excel fayl yuborilmoqda...")
             with open(filename, 'rb') as file:
                 await update.message.reply_document(
                     document=file,
@@ -3407,12 +3442,20 @@ class BotopneBot:
                             "• Pul chiqarish\n"
                             "• Balans tarixi\n"
                             "• Loyihalar\n"
-                            "• Tasdiqlangan loyihalar",
+                            "• Tasdiqlangan loyihalar\n\n"
+                            f"📁 Fayl hajmi: {file_size:,} bayt",
                     parse_mode='Markdown'
                 )
             
+            # Status xabarini yangilash
+            await status_message.edit_text(
+                "✅ *Hisobot muvaffaqiyatli yaratildi!*\n\n"
+                f"📊 Excel fayl yuborildi\n"
+                f"📁 Fayl hajmi: {file_size:,} bayt",
+                parse_mode='Markdown'
+            )
+            
             # Faylni o'chirish (server xotirasini tejash uchun)
-            import os
             try:
                 os.remove(filename)
                 print(f"Fayl o'chirildi: {filename}")
@@ -3421,9 +3464,14 @@ class BotopneBot:
             
         except Exception as e:
             print(f"Hisobot yaratishda xato: {e}")
-            await update.message.reply_text(
+            print(f"Xato turi: {type(e).__name__}")
+            import traceback
+            print(f"Xato izi: {traceback.format_exc()}")
+            
+            await status_message.edit_text(
                 f"❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
-                f"Xato: {str(e)}",
+                f"Xato: {str(e)}\n\n"
+                f"🔍 *Xato turi:* {type(e).__name__}",
                 parse_mode='Markdown'
             )
 
