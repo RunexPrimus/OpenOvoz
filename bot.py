@@ -13,6 +13,7 @@ from messages import get_message
 from config import *
 import asyncio
 import telegram
+import os
 
 # Logging sozlamalari
 logging.basicConfig(
@@ -2386,9 +2387,9 @@ class BotopneBot:
                 'approved_at': datetime.now()
             }
             
-            success = self.db.create_approved_project(project_data)
+            project_id = self.db.create_approved_project(project_data)
             
-            if success:
+            if project_id:
                 # Barcha foydalanuvchilarga xabar yuborish
                 await self.broadcast_project_to_all_users(project_name, project_link, language)
                 
@@ -3383,190 +3384,48 @@ class BotopneBot:
         )
         
         try:
-            # Barcha ma'lumotlarni olish
-            report_data = self.db.get_comprehensive_report_data()
+            # Excel fayl yaratish (database dan)
+            filename = self.db.create_excel_report()
             
-            if not report_data:
-                await update.message.reply_text("❌ Hisobot ma'lumotlari topilmadi!")
+            if not filename:
+                await update.message.reply_text(
+                    "❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
+                    "Xato: Excel fayl yaratilmadi",
+                    parse_mode='Markdown'
+                )
                 return
             
-            # Excel fayl yaratish
-            import pandas as pd
-            from datetime import datetime
-            import io
-            
-            # Excel writer yaratish
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                
-                # 1. Foydalanuvchilar jadvali
-                users_df = pd.DataFrame([
-                    {
-                        'ID': row[0],
-                        'Telegram ID': row[1],
-                        'Username': row[2] or 'N/A',
-                        'Ism': row[3] or 'N/A',
-                        'Familiya': row[4] or 'N/A',
-                        'Telefon': row[5] or 'N/A',
-                        'Hudud': row[6] or 'N/A',
-                        'Til': row[7] or 'uz',
-                        'Referal kodi': row[8] or 'N/A',
-                        'Balans': row[9] or 0,
-                        'Kutilayotgan': row[10] or 0,
-                        'Jami topilgan': row[11] or 0,
-                        'Jami chiqarilgan': row[12] or 0,
-                        'Ro\'yxatdan o\'tish': row[13],
-                        'Jami ovozlar': row[14] or 0,
-                        'Ovoz bergan mavsumlar': row[15] or 0
-                    }
-                    for row in report_data['users']
-                ])
-                users_df.to_excel(writer, sheet_name='Foydalanuvchilar', index=False)
-                
-                # 2. Ovoz berish tarixi
-                if report_data['votes']:
-                    votes_df = pd.DataFrame([
-                        {
-                            'Ovoz ID': row[0],
-                            'Foydalanuvchi ID': row[1],
-                            'Telegram ID': row[2],
-                            'Ism': row[3] or 'N/A',
-                            'Familiya': row[4] or 'N/A',
-                            'Loyiha nomi': row[5] or 'N/A',
-                            'Mavsum': row[6] or 'N/A',
-                            'Ovoz berish vaqti': row[7]
-                        }
-                        for row in report_data['votes']
-                    ])
-                    votes_df.to_excel(writer, sheet_name='Ovoz berish tarixi', index=False)
-                
-                # 3. Pul chiqarish so'rovlari
-                if report_data['withdrawals']:
-                    withdrawals_df = pd.DataFrame([
-                        {
-                            'So\'rov ID': row[0],
-                            'Foydalanuvchi ID': row[1],
-                            'Telegram ID': row[2],
-                            'Ism': row[3] or 'N/A',
-                            'Familiya': row[4] or 'N/A',
-                            'Telefon': row[5] or 'N/A',
-                            'Miqdor': row[6] or 0,
-                            'Komissiya': row[7] or 0,
-                            'Olinadigan': row[8] or 0,
-                            'Usul': row[9] or 'N/A',
-                            'Hisob ma\'lumotlari': row[10] or 'N/A',
-                            'Holat': row[11] or 'N/A',
-                            'So\'rov vaqti': row[12],
-                            'Tasdiqlash vaqti': row[13] or 'N/A'
-                        }
-                        for row in report_data['withdrawals']
-                    ])
-                    withdrawals_df.to_excel(writer, sheet_name='Pul chiqarish', index=False)
-                
-                # 4. Balans tarixi
-                if report_data['balance_history']:
-                    balance_df = pd.DataFrame([
-                        {
-                            'Tarix ID': row[0],
-                            'Foydalanuvchi ID': row[1],
-                            'Telegram ID': row[2],
-                            'Ism': row[3] or 'N/A',
-                            'Familiya': row[4] or 'N/A',
-                            'Miqdor': row[5] or 0,
-                            'Turi': row[6] or 'N/A',
-                            'Izoh': row[7] or 'N/A',
-                            'Holat': row[8] or 'N/A',
-                            'Vaqt': row[9]
-                        }
-                        for row in report_data['balance_history']
-                    ])
-                    balance_df.to_excel(writer, sheet_name='Balans tarixi', index=False)
-                
-                # 5. Loyihalar
-                if report_data['projects']:
-                    projects_df = pd.DataFrame([
-                        {
-                            'Loyiha ID': row[0],
-                            'Nomi': row[1] or 'N/A',
-                            'Budjet': row[2] or 0,
-                            'Hudud': row[3] or 'N/A',
-                            'Holat': row[4] or 'N/A',
-                            'Mavsum': row[5] or 'N/A',
-                            'Jami ovozlar': row[6] or 0,
-                            'Yaratilgan vaqti': row[7]
-                        }
-                        for row in report_data['projects']
-                    ])
-                    projects_df.to_excel(writer, sheet_name='Loyihalar', index=False)
-                
-                # 6. Tasdiqlangan loyihalar
-                if report_data['approved_projects']:
-                    approved_df = pd.DataFrame([
-                        {
-                            'Loyiha ID': row[0],
-                            'Nomi': row[1] or 'N/A',
-                            'Havola': row[2] or 'N/A',
-                            'Holat': row[3] or 'N/A',
-                            'Tasdiqlagan': row[4] or 'N/A',
-                            'Tasdiqlash vaqti': row[5],
-                            'Yaratilgan vaqti': row[6]
-                        }
-                        for row in report_data['approved_projects']
-                    ])
-                    approved_df.to_excel(writer, sheet_name='Tasdiqlangan loyihalar', index=False)
-                
-                # 7. Umumiy statistika
-                stats_data = {
-                    'Statistika': [
-                        'Jami foydalanuvchilar',
-                        'Jami ovozlar',
-                        'Jami loyihalar',
-                        'Jami tasdiqlangan loyihalar',
-                        'Jami pul chiqarish so\'rovlari',
-                        'Jami balans tarixi yozuvlari'
-                    ],
-                    'Qiymat': [
-                        len(report_data['users']),
-                        len(report_data['votes']),
-                        len(report_data['projects']),
-                        len(report_data['approved_projects']),
-                        len(report_data['withdrawals']),
-                        len(report_data['balance_history'])
-                    ]
-                }
-                stats_df = pd.DataFrame(stats_data)
-                stats_df.to_excel(writer, sheet_name='Umumiy statistika', index=False)
-            
-            # Excel faylni tayyorlash
-            output.seek(0)
-            
-            # Fayl nomini yaratish
-            current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"Botopne_Hisobot_{current_time}.xlsx"
-            
             # Excel faylni yuborish
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=output,
-                filename=filename,
-                caption=f"📋 *To\'liq hisobot*\n\n"
-                        f"📅 Yaratilgan vaqti: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"📊 Jami foydalanuvchilar: {len(report_data['users'])}\n"
-                        f"🗳 Jami ovozlar: {len(report_data['votes'])}\n"
-                        f"🏗 Jami loyihalar: {len(report_data['projects']) + len(report_data['approved_projects'])}\n"
-                        f"💸 Jami pul chiqarish so\'rovlari: {len(report_data['withdrawals'])}\n\n"
-                        f"✅ Excel fayl muvaffaqiyatli yaratildi!",
-                parse_mode='Markdown'
-            )
+            with open(filename, 'rb') as file:
+                await update.message.reply_document(
+                    document=file,
+                    filename=filename,
+                    caption="📊 *To'liq hisobot yaratildi!*\n\n"
+                            "📋 Excel fayl quyidagi sahifalarni o'z ichiga oladi:\n"
+                            "• Foydalanuvchilar\n"
+                            "• Ovozlar\n"
+                            "• Pul chiqarish\n"
+                            "• Balans tarixi\n"
+                            "• Loyihalar\n"
+                            "• Tasdiqlangan loyihalar",
+                    parse_mode='Markdown'
+                )
             
-            print(f"Hisobot yaratildi va yuborildi: {filename}")
+            # Faylni o'chirish (server xotirasini tejash uchun)
+            import os
+            try:
+                os.remove(filename)
+                print(f"Fayl o'chirildi: {filename}")
+            except Exception as e:
+                print(f"Fayl o'chirishda xato: {e}")
             
         except Exception as e:
-            error_message = f"❌ *Hisobot yaratishda xato yuz berdi!*\n\nXato: {str(e)}"
-            await update.message.reply_text(error_message, parse_mode='Markdown')
             print(f"Hisobot yaratishda xato: {e}")
-            import traceback
-            traceback.print_exc()
+            await update.message.reply_text(
+                f"❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
+                f"Xato: {str(e)}",
+                parse_mode='Markdown'
+            )
 
     def run(self):
         """Botni ishga tushirish"""

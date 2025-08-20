@@ -455,16 +455,28 @@ class DatabasePostgreSQL:
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Avval sozlama mavjudligini tekshirish
+            cursor.execute("SELECT id FROM settings WHERE key = %s", (key,))
+            if not cursor.fetchone():
+                print(f"Sozlama topilmadi: {key}")
+                return False
+            
+            # Sozlamani yangilash
             cursor.execute("""
                 UPDATE settings 
-                SET value = %s, updated_by = %s, updated_at = CURRENT_TIMESTAMP 
+                SET value = %s, updated_at = CURRENT_TIMESTAMP 
                 WHERE key = %s
-            """, (value, admin_id, key))
+            """, (value, key))
             
             if cursor.rowcount > 0:
                 conn.commit()
+                print(f"Sozlama muvaffaqiyatli yangilandi: {key} = {value}")
                 return True
-            return False
+            else:
+                print(f"Sozlama yangilanmadi: {key}")
+                return False
+                
         except Exception as e:
             conn.rollback()
             print(f"Sozlama yangilashda xato: {e}")
@@ -572,9 +584,21 @@ class DatabasePostgreSQL:
     
     def create_approved_project(self, project_data):
         """Tasdiqlangan loyihani yaratish"""
-        conn = self.get_connection()
+        conn = None
         try:
+            print(f"Loyiha yaratish boshlandi: {project_data}")
+            conn = self.get_connection()
             cursor = conn.cursor()
+            
+            # Ma'lumotlarni tekshirish
+            required_fields = ['name', 'link', 'status', 'approved_by', 'approved_at']
+            for field in required_fields:
+                if field not in project_data or project_data[field] is None:
+                    print(f"Majburiy maydon topilmadi: {field}")
+                    return None
+            
+            print(f"Loyiha ma'lumotlari to'g'ri, bazaga saqlash boshlandi...")
+            
             cursor.execute("""
                 INSERT INTO approved_projects (name, link, status, approved_by, approved_at, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
@@ -590,13 +614,20 @@ class DatabasePostgreSQL:
             
             project_id = cursor.fetchone()[0]
             conn.commit()
+            print(f"Loyiha muvaffaqiyatli yaratildi! ID: {project_id}")
             return project_id
+            
         except Exception as e:
-            conn.rollback()
+            if conn:
+                conn.rollback()
             print(f"Tasdiqlangan loyiha yaratishda xato: {e}")
+            print(f"Xato turi: {type(e).__name__}")
+            import traceback
+            print(f"Xato izi: {traceback.format_exc()}")
             return None
         finally:
-            conn.close()
+            if conn:
+                conn.close()
     
     def create_withdrawal_request(self, withdrawal_data):
         """Pul chiqarish so'rovini yaratish"""
@@ -987,3 +1018,188 @@ class DatabasePostgreSQL:
         finally:
             cursor.close()
             conn.close()
+
+    def create_excel_report(self):
+        """Excel hisobot yaratish"""
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+            
+            # Ma'lumotlarni olish
+            data = self.get_comprehensive_report_data()
+            
+            # Yangi Excel fayl yaratish
+            wb = openpyxl.Workbook()
+            
+            # 1. Foydalanuvchilar sahifasi
+            ws_users = wb.active
+            ws_users.title = "Foydalanuvchilar"
+            
+            # Sarlavhalar
+            headers = [
+                'ID', 'Telegram ID', 'Username', 'Ism', 'Familiya', 'Telefon', 
+                'Hudud', 'Til', 'Referal kod', 'Balans', 'Pending', 
+                'Jami topilgan', 'Jami chiqarilgan', 'Ro\'yxatdan o\'tish', 
+                'Ovozlar soni', 'Mavsumlar'
+            ]
+            
+            for col, header in enumerate(headers, 1):
+                cell = ws_users.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            # Ma'lumotlarni qo'shish
+            for row, user in enumerate(data['users'], 2):
+                ws_users.cell(row=row, column=1, value=user[0])  # ID
+                ws_users.cell(row=row, column=2, value=user[1])  # Telegram ID
+                ws_users.cell(row=row, column=3, value=user[2] or '')  # Username
+                ws_users.cell(row=row, column=4, value=user[3] or '')  # First name
+                ws_users.cell(row=row, column=5, value=user[4] or '')  # Last name
+                ws_users.cell(row=row, column=6, value=user[5] or '')  # Phone
+                ws_users.cell(row=row, column=7, value=user[6] or '')  # Region
+                ws_users.cell(row=row, column=8, value=user[7] or '')  # Language
+                ws_users.cell(row=row, column=9, value=user[8] or '')  # Referral code
+                ws_users.cell(row=row, column=10, value=user[9] or 0)  # Balance
+                ws_users.cell(row=row, column=11, value=user[10] or 0)  # Pending
+                ws_users.cell(row=row, column=12, value=user[11] or 0)  # Total earned
+                ws_users.cell(row=row, column=13, value=user[12] or 0)  # Total withdrawn
+                ws_users.cell(row=row, column=14, value=str(user[13])[:19] if user[13] else '')  # Created at
+                ws_users.cell(row=row, column=15, value=user[14] or 0)  # Total votes
+                ws_users.cell(row=row, column=16, value=user[15] or 0)  # Seasons voted
+            
+            # 2. Ovozlar sahifasi
+            ws_votes = wb.create_sheet("Ovozlar")
+            
+            vote_headers = ['ID', 'Foydalanuvchi ID', 'Telegram ID', 'Ism', 'Familiya', 'Loyiha', 'Mavsum', 'Sana']
+            for col, header in enumerate(vote_headers, 1):
+                cell = ws_votes.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            for row, vote in enumerate(data['votes'], 2):
+                ws_votes.cell(row=row, column=1, value=vote[0])  # ID
+                ws_votes.cell(row=row, column=2, value=vote[1])  # User ID
+                ws_votes.cell(row=row, column=3, value=vote[2])  # Telegram ID
+                ws_votes.cell(row=row, column=4, value=vote[3] or '')  # First name
+                ws_votes.cell(row=row, column=5, value=vote[4] or '')  # Last name
+                ws_votes.cell(row=row, column=6, value=vote[5] or '')  # Project name
+                ws_votes.cell(row=row, column=7, value=vote[6] or '')  # Season name
+                ws_votes.cell(row=row, column=8, value=str(vote[7])[:19] if vote[7] else '')  # Vote date
+            
+            # 3. Pul chiqarish sahifasi
+            ws_withdrawals = wb.create_sheet("Pul chiqarish")
+            
+            withdrawal_headers = ['ID', 'Foydalanuvchi ID', 'Telegram ID', 'Ism', 'Familiya', 'Telefon', 'Miqdor', 'Komissiya', 'Olinadigan', 'Usul', 'Ma\'lumotlar', 'Holat', 'Sana', 'Tasdiqlangan']
+            for col, header in enumerate(withdrawal_headers, 1):
+                cell = ws_withdrawals.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            for row, withdrawal in enumerate(data['withdrawals'], 2):
+                ws_withdrawals.cell(row=row, column=1, value=withdrawal[0])  # ID
+                ws_withdrawals.cell(row=row, column=2, value=withdrawal[1])  # User ID
+                ws_withdrawals.cell(row=row, column=3, value=withdrawal[2])  # Telegram ID
+                ws_withdrawals.cell(row=row, column=4, value=withdrawal[3] or '')  # First name
+                ws_withdrawals.cell(row=row, column=5, value=withdrawal[4] or '')  # Last name
+                ws_withdrawals.cell(row=row, column=6, value=withdrawal[5] or '')  # Phone
+                ws_withdrawals.cell(row=row, column=7, value=withdrawal[6] or 0)  # Amount
+                ws_withdrawals.cell(row=row, column=8, value=withdrawal[7] or 0)  # Commission
+                ws_withdrawals.cell(row=row, column=9, value=withdrawal[8] or 0)  # Net amount
+                ws_withdrawals.cell(row=row, column=10, value=withdrawal[9] or '')  # Method
+                ws_withdrawals.cell(row=row, column=11, value=withdrawal[10] or '')  # Account details
+                ws_withdrawals.cell(row=row, column=12, value=withdrawal[11] or '')  # Status
+                ws_withdrawals.cell(row=row, column=13, value=str(withdrawal[12])[:19] if withdrawal[12] else '')  # Created at
+                ws_withdrawals.cell(row=row, column=14, value=str(withdrawal[13])[:19] if withdrawal[13] else '')  # Processed at
+            
+            # 4. Balans tarixi sahifasi
+            ws_balance = wb.create_sheet("Balans tarixi")
+            
+            balance_headers = ['ID', 'Foydalanuvchi ID', 'Telegram ID', 'Ism', 'Familiya', 'Miqdor', 'Turi', 'Izoh', 'Holat', 'Sana']
+            for col, header in enumerate(balance_headers, 1):
+                cell = ws_balance.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            for row, balance in enumerate(data['balance_history'], 2):
+                ws_balance.cell(row=row, column=1, value=balance[0])  # ID
+                ws_balance.cell(row=row, column=2, value=balance[1])  # User ID
+                ws_balance.cell(row=row, column=3, value=balance[2])  # Telegram ID
+                ws_balance.cell(row=row, column=4, value=balance[3] or '')  # First name
+                ws_balance.cell(row=row, column=5, value=balance[4] or '')  # Last name
+                ws_balance.cell(row=row, column=6, value=balance[5] or 0)  # Amount
+                ws_balance.cell(row=row, column=7, value=balance[6] or '')  # Type
+                ws_balance.cell(row=row, column=8, value=balance[7] or '')  # Description
+                ws_balance.cell(row=row, column=9, value=balance[8] or '')  # Status
+                ws_balance.cell(row=row, column=10, value=str(balance[9])[:19] if balance[9] else '')  # Created at
+            
+            # 5. Loyihalar sahifasi
+            ws_projects = wb.create_sheet("Loyihalar")
+            
+            project_headers = ['ID', 'Nomi', 'Budjet', 'Hudud', 'Holat', 'Mavsum', 'Ovozlar soni', 'Yaratilgan']
+            for col, header in enumerate(project_headers, 1):
+                cell = ws_projects.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            for row, project in enumerate(data['projects'], 2):
+                ws_projects.cell(row=row, column=1, value=project[0])  # ID
+                ws_projects.cell(row=row, column=2, value=project[1] or '')  # Name
+                ws_projects.cell(row=row, column=3, value=project[2] or 0)  # Budget
+                ws_projects.cell(row=row, column=4, value=project[3] or '')  # Region
+                ws_projects.cell(row=row, column=5, value=project[4] or '')  # Status
+                ws_projects.cell(row=row, column=6, value=project[5] or '')  # Season name
+                ws_projects.cell(row=row, column=7, value=project[6] or 0)  # Total votes
+                ws_projects.cell(row=row, column=8, value=str(project[7])[:19] if project[7] else '')  # Created at
+            
+            # 6. Tasdiqlangan loyihalar sahifasi
+            ws_approved = wb.create_sheet("Tasdiqlangan loyihalar")
+            
+            approved_headers = ['ID', 'Nomi', 'Havola', 'Holat', 'Tasdiqlagan', 'Tasdiqlangan', 'Yaratilgan']
+            for col, header in enumerate(approved_headers, 1):
+                cell = ws_approved.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+            
+            for row, approved in enumerate(data['approved_projects'], 2):
+                ws_approved.cell(row=row, column=1, value=approved[0])  # ID
+                ws_approved.cell(row=row, column=2, value=approved[1] or '')  # Name
+                ws_approved.cell(row=row, column=3, value=approved[2] or '')  # Link
+                ws_approved.cell(row=row, column=4, value=approved[3] or '')  # Status
+                ws_approved.cell(row=row, column=5, value=approved[4] or '')  # Approved by
+                ws_approved.cell(row=row, column=6, value=str(approved[5])[:19] if approved[5] else '')  # Approved at
+                ws_approved.cell(row=row, column=7, value=str(approved[6])[:19] if approved[6] else '')  # Created at
+            
+            # Sütunlarni avtomatik o'lchamlash
+            for ws in [ws_users, ws_votes, ws_withdrawals, ws_balance, ws_projects, ws_approved]:
+                for column in ws.columns:
+                    max_length = 0
+                    column_letter = get_column_letter(column[0].column)
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Excel faylni saqlash
+            filename = f"botopne_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            wb.save(filename)
+            print(f"Excel hisobot yaratildi: {filename}")
+            
+            return filename
+            
+        except ImportError:
+            print("openpyxl paketi topilmadi. Excel hisobot yaratish uchun: pip install openpyxl")
+            return None
+        except Exception as e:
+            print(f"Excel hisobot yaratishda xato: {e}")
+            return None
