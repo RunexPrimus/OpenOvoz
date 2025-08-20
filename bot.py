@@ -2398,11 +2398,25 @@ class BotopneBot:
                     return ConversationHandler.END
                 
                 # Loyihani bazaga saqlash
+                # Foydalanuvchining database dagi ID sini olish
+                db_user = self.db.get_user(user.id)
+                if not db_user:
+                    print(f"Foydalanuvchi topilmadi: {user.id}")
+                    await query.edit_message_text(
+                        "❌ *Loyiha tasdiqlashda xatolik yuz berdi!*\n\n"
+                        "Xato: Foydalanuvchi ma'lumotlari topilmadi\n"
+                        "Iltimos, qaytadan urinib ko'ring.",
+                        parse_mode='Markdown',
+                        reply_markup=get_back_keyboard()
+                    )
+                    context.user_data.clear()
+                    return ConversationHandler.END
+                
                 project_data = {
                     'name': project_name,
                     'link': project_link,
                     'status': 'approved',
-                    'approved_by': user.id,
+                    'approved_by': db_user['id'],  # Database dagi ID, telegram_id emas
                     'approved_at': datetime.now()
                 }
                 

@@ -118,7 +118,7 @@ class DatabasePostgreSQL:
             # Foydalanuvchilar jadvali
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
+                    id BIGSERIAL PRIMARY KEY,
                     telegram_id BIGINT UNIQUE NOT NULL,
                     username VARCHAR(255),
                     first_name VARCHAR(255),
@@ -127,7 +127,7 @@ class DatabasePostgreSQL:
                     region VARCHAR(100),
                     language VARCHAR(10) DEFAULT 'uz',
                     referral_code VARCHAR(20) UNIQUE,
-                    referred_by INTEGER,
+                    referred_by BIGINT,
                     balance INTEGER DEFAULT 0,
                     pending_balance INTEGER DEFAULT 0,
                     total_earned INTEGER DEFAULT 0,
@@ -182,7 +182,7 @@ class DatabasePostgreSQL:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS votes (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
                     project_id INTEGER NOT NULL,
                     season_id INTEGER NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -198,7 +198,7 @@ class DatabasePostgreSQL:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS withdrawal_requests (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
                     amount INTEGER NOT NULL,
                     commission INTEGER NOT NULL,
                     net_amount INTEGER NOT NULL,
@@ -206,7 +206,7 @@ class DatabasePostgreSQL:
                     account_details TEXT NOT NULL,
                     status VARCHAR(50) DEFAULT 'pending',
                     admin_notes TEXT,
-                    processed_by INTEGER,
+                    processed_by BIGINT,
                     processed_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id),
@@ -233,7 +233,7 @@ class DatabasePostgreSQL:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS balance_history (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
                     amount INTEGER NOT NULL,
                     type VARCHAR(100) NOT NULL,
                     description TEXT,
@@ -253,7 +253,7 @@ class DatabasePostgreSQL:
                     content TEXT NOT NULL,
                     language VARCHAR(10) DEFAULT 'uz',
                     is_active BOOLEAN DEFAULT TRUE,
-                    created_by INTEGER NOT NULL,
+                    created_by BIGINT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (created_by) REFERENCES users (id)
                 )
@@ -264,7 +264,7 @@ class DatabasePostgreSQL:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER,
+                    user_id BIGINT,
                     action VARCHAR(255) NOT NULL,
                     details TEXT,
                     ip_address VARCHAR(45),
@@ -282,11 +282,10 @@ class DatabasePostgreSQL:
                     name VARCHAR(255) NOT NULL,
                     link TEXT NOT NULL,
                     status VARCHAR(50) DEFAULT 'approved',
-                    approved_by INTEGER NOT NULL,
+                    approved_by BIGINT NOT NULL,
                     approved_at TIMESTAMP NOT NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (approved_by) REFERENCES users (id)
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             print("✅ approved_projects jadvali yaratildi/yangilandi")
