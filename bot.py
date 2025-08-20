@@ -2752,9 +2752,36 @@ class BotopneBot:
                 print(f"Foydalanuvchiga xabar yuborishda xato: {e}")
             
             # Admin xabarini yangilash
+            # Foydalanuvchi ma'lumotlarini olish
+            user_info = self.db.get_user(user_id)
+            print(f"DEBUG: user_id = {user_id}")
+            print(f"DEBUG: user_info = {user_info}")
+            if user_info:
+                print(f"DEBUG: user_info type = {type(user_info)}")
+                print(f"DEBUG: user_info keys = {list(user_info.keys()) if hasattr(user_info, 'keys') else 'No keys method'}")
+                print(f"DEBUG: username = {user_info['username'] if 'username' in user_info else 'No username key'}")
+                print(f"DEBUG: last_withdrawal_account = {user_info['last_withdrawal_account'] if 'last_withdrawal_account' in user_info else 'No last_withdrawal_account key'}")
+            
+            username = user_info['username'] if user_info and user_info['username'] else 'N/A'
+            withdrawal_account = user_info['last_withdrawal_account'] if user_info and user_info['last_withdrawal_account'] else 'N/A'
+            
+            # Debug: print the actual values
+            print(f"DEBUG: username = {username}, withdrawal_account = {withdrawal_account}")
+            
+            # To'lov usulini xavfsiz ko'rsatish
+            if withdrawal_account and withdrawal_account != 'N/A':
+                if len(withdrawal_account) > 8:  # Karta raqami yoki telefon
+                    masked_account = withdrawal_account[:4] + '****' + withdrawal_account[-4:]
+                else:
+                    masked_account = withdrawal_account[:2] + '****' + withdrawal_account[-2:]
+            else:
+                masked_account = 'N/A'
+            
             await query.edit_message_text(
                 f"✅ *To'lov tasdiqlandi!*\n\n"
                 f"👤 Foydalanuvchi: {user_id}\n"
+                f"👤 Niki: @{username}\n"
+                f"💳 To'lov usuli: {masked_account}\n"
                 f"💰 Miqdor: {amount:,} so'm\n"
                 f"✅ Balans 0 qilindi\n"
                 f"📱 Foydalanuvchiga xabar yuborildi",
@@ -2802,9 +2829,26 @@ class BotopneBot:
                 print(f"Foydalanuvchiga xabar yuborishda xato: {e}")
             
             # Admin xabarini yangilash
+            # Foydalanuvchi ma'lumotlarini olish
+            user_info = self.db.get_user(user_id)
+            
+            username = user_info['username'] if user_info and user_info['username'] else 'N/A'
+            withdrawal_account = user_info['last_withdrawal_account'] if user_info and user_info['last_withdrawal_account'] else 'N/A'
+            
+            # To'lov usulini xavfsiz ko'rsatish
+            if withdrawal_account and withdrawal_account != 'N/A':
+                if len(withdrawal_account) > 8:  # Karta raqami yoki telefon
+                    masked_account = withdrawal_account[:4] + '****' + withdrawal_account[-4:]
+                else:
+                    masked_account = withdrawal_account[:2] + '****' + withdrawal_account[-2:]
+            else:
+                masked_account = 'N/A'
+            
             await query.edit_message_text(
                 f"❌ *To'lov rad etildi!*\n\n"
                 f"👤 Foydalanuvchi: {user_id}\n"
+                f"👤 Niki: @{username}\n"
+                f"💳 To'lov usuli: {masked_account}\n"
                 f"💰 Balans qaytarildi\n"
                 f"📱 Foydalanuvchiga xabar yuborildi",
                 parse_mode='Markdown'
