@@ -1063,7 +1063,7 @@ class DatabasePostgreSQL:
                     FROM projects p
                     LEFT JOIN seasons s ON p.season_id = s.id
                     LEFT JOIN votes v ON p.id = v.project_id
-                    GROUP BY p.id
+                    GROUP BY p.id, p.name, p.budget, p.region, p.status, s.name, p.created_at
                     ORDER BY p.created_at DESC
                 """)
                 projects_data = cursor.fetchall()
@@ -1146,7 +1146,7 @@ class DatabasePostgreSQL:
             print(f"Ma'lumotlar yig'ildi: {len(data)} ta jadval")
             
             # Ma'lumotlar mavjudligini tekshirish
-            total_records = sum(len(data[key]) for key in data.values())
+            total_records = sum(len(value) for value in data.values())
             if total_records == 0:
                 print("Ma'lumotlar bazasi bo'sh - bo'sh Excel fayl yaratilmoqda...")
                 # Bo'sh Excel fayl yaratish

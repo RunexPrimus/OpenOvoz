@@ -3435,19 +3435,67 @@ class BotopneBot:
         try:
             print(f"Hisobot yaratish boshlandi - Admin: {user.id}")
             
+            # Database ulanishini test qilish
+            print("Database ulanish test qilinmoqda...")
+            try:
+                test_conn = self.db.get_connection()
+                if test_conn:
+                    print("✅ Database ulanish muvaffaqiyatli!")
+                    test_conn.close()
+                else:
+                    print("❌ Database ulanish muvaffaqiyatsiz!")
+            except Exception as db_error:
+                print(f"❌ Database ulanishda xato: {db_error}")
+                await status_message.edit_text(
+                    "❌ *Database ulanish muammosi!*\n\n"
+                    f"Xato: {str(db_error)}\n\n"
+                    "🔍 *Muammo sababi:*\n"
+                    "• Railway database ulanishi uzildi\n"
+                    "• SSL sertifikat muammosi\n"
+                    "• Database server ishlamayapti\n\n"
+                    "Iltimos, keyinroq urinib ko'ring.",
+                    parse_mode='Markdown'
+                )
+                return
+            
             # Excel fayl yaratish (database dan)
             print("Database dan Excel hisobot yaratish so'ralmoqda...")
             filename = self.db.create_excel_report()
             
             if not filename:
                 print("Excel fayl yaratilmadi - filename None")
+                
+                # Batafsil xato sababini aniqlash
+                error_reason = "Noma'lum sabab"
+                try:
+                    # openpyxl paketini tekshirish
+                    import openpyxl
+                    print("✅ openpyxl paketi mavjud")
+                    
+                    # Database dan ma'lumotlarni olishga urinish
+                    test_data = self.db.get_comprehensive_report_data()
+                    if test_data:
+                        total_records = sum(len(value) for value in test_data.values())
+                        if total_records == 0:
+                            error_reason = "Ma'lumotlar bazasi bo'sh"
+                        else:
+                            error_reason = "Excel fayl yaratishda xato"
+                    else:
+                        error_reason = "Database dan ma'lumotlar olinmadi"
+                        
+                except ImportError:
+                    error_reason = "openpyxl paketi topilmagan"
+                except Exception as e:
+                    error_reason = f"Database xatosi: {str(e)}"
+                
                 await status_message.edit_text(
                     "❌ *Hisobot yaratishda xato yuz berdi!*\n\n"
-                    "Xato: Excel fayl yaratilmadi\n\n"
+                    f"Xato: Excel fayl yaratilmadi\n\n"
                     "🔍 *Muammo sababi:*\n"
-                    "• Database ulanish muammosi\n"
-                    "• openpyxl paketi topilmagan\n"
-                    "• Ma'lumotlar bazasi bo'sh",
+                    f"• {error_reason}\n\n"
+                    "💡 *Yechim:*\n"
+                    "• Iltimos, keyinroq urinib ko'ring\n"
+                    "• Admin bilan bog'laning",
                     parse_mode='Markdown'
                 )
                 return
