@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from config import (
     POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, 
-    POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_URL, DATABASE_PUBLIC_URL
+    POSTGRES_USER, POSTGRES_PASSWORD, DATABASE_URL, DATABASE_PUBLIC_URL
 )
 
 class DatabasePostgreSQL:
@@ -14,8 +14,8 @@ class DatabasePostgreSQL:
     
     def _get_connection_params(self):
         """PostgreSQL ulanish parametrlarini olish"""
-        if POSTGRES_URL:
-            return {'dsn': POSTGRES_URL}
+        if DATABASE_URL:
+            return {'dsn': DATABASE_URL}
         elif DATABASE_PUBLIC_URL:
             return {'dsn': DATABASE_PUBLIC_URL}
         else:
