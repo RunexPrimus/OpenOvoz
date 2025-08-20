@@ -14,13 +14,33 @@ class DatabasePostgreSQL:
     
     def _get_connection_params(self):
         """PostgreSQL ulanish parametrlarini olish"""
-        # Railway da avval DATABASE_URL ni sinab ko'rish (eng muhim)
-        if DATABASE_URL:
-            print(f"Railway DATABASE_URL ishlatilmoqda: {DATABASE_URL[:50]}...")
-            return {'dsn': DATABASE_URL}
-        elif DATABASE_PUBLIC_URL:
+        # Railway da avval DATABASE_PUBLIC_URL ni sinab ko'rish (eng muhim - tashqi ulanish uchun)
+        if DATABASE_PUBLIC_URL:
             print(f"Railway DATABASE_PUBLIC_URL ishlatilmoqda: {DATABASE_PUBLIC_URL[:50]}...")
             return {'dsn': DATABASE_PUBLIC_URL}
+        elif DATABASE_URL:
+            print(f"Railway DATABASE_URL ishlatilmoqda: {DATABASE_URL[:50]}...")
+            # DATABASE_URL ni parse qilib, individual parametrlarga o'tkazish
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(DATABASE_URL)
+                return {
+                    'host': parsed.hostname,
+                    'port': parsed.port or 5432,
+                    'database': parsed.path[1:],  # /database_name -> database_name
+                    'user': parsed.username,
+                    'password': parsed.password
+                }
+            except Exception as e:
+                print(f"DATABASE_URL parse qilishda xato: {e}")
+                # Fallback uchun individual parametrlar
+                return {
+                    'host': POSTGRES_HOST,
+                    'port': POSTGRES_PORT,
+                    'database': POSTGRES_DB,
+                    'user': POSTGRES_USER,
+                    'password': POSTGRES_PASSWORD
+                }
         else:
             # Fallback uchun individual parametrlar (faqat local development uchun)
             print(f"Fallback parametrlar ishlatilmoqda: {POSTGRES_HOST}:{POSTGRES_PORT}")
@@ -34,20 +54,39 @@ class DatabasePostgreSQL:
     
     def get_connection(self):
         """PostgreSQL ulanishini olish"""
-        try:
-            conn = psycopg2.connect(**self.connection_params)
-            conn.autocommit = False
-            return conn
-        except Exception as e:
-            print(f"PostgreSQL ulanishda xato: {e}")
-            raise
+        max_retries = 3
+        retry_delay = 2  # sekund
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"Ulanish urinishi {attempt + 1}/{max_retries}...")
+                conn = psycopg2.connect(**self.connection_params)
+                conn.autocommit = False
+                print("PostgreSQL ulanish muvaffaqiyatli!")
+                return conn
+            except psycopg2.OperationalError as e:
+                print(f"PostgreSQL ulanishda xato (urinish {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    print(f"{retry_delay} soniyadan keyin qayta urinish...")
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Har safar 2 barobar ko'paytirish
+                else:
+                    print("Barcha urinishlar muvaffaqiyatsiz. Xatolik:")
+                    raise
+            except Exception as e:
+                print(f"Boshqa xato: {e}")
+                raise
     
     def init_database(self):
         """Ma'lumotlar bazasi va jadvallarni yaratish"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+        conn = None
         try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            print("Ma'lumotlar bazasi jadvallari yaratilmoqda...")
+            
             # Foydalanuvchilar jadvali
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
@@ -73,6 +112,7 @@ class DatabasePostgreSQL:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            print("✅ users jadvali yaratildi/yangilandi")
             
             # Mavsumlar jadvali
             cursor.execute('''
@@ -87,6 +127,7 @@ class DatabasePostgreSQL:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            print("✅ seasons jadvali yaratildi/yangilandi")
             
             # Loyihalar jadvali
             cursor.execute('''
@@ -107,6 +148,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (season_id) REFERENCES seasons (id)
                 )
             ''')
+            print("✅ projects jadvali yaratildi/yangilandi")
             
             # Ovozlar jadvali
             cursor.execute('''
@@ -122,6 +164,7 @@ class DatabasePostgreSQL:
                     UNIQUE(user_id, project_id, season_id)
                 )
             ''')
+            print("✅ votes jadvali yaratildi/yangilandi")
             
             # Pul chiqarish so'rovlari
             cursor.execute('''
@@ -142,6 +185,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (processed_by) REFERENCES users (id)
                 )
             ''')
+            print("✅ withdrawal_requests jadvali yaratildi/yangilandi")
             
             # Sozlamalar jadvali
             cursor.execute('''
@@ -155,6 +199,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (updated_by) REFERENCES users (id)
                 )
             ''')
+            print("✅ settings jadvali yaratildi/yangilandi")
             
             # Balans tarixi
             cursor.execute('''
@@ -170,6 +215,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             ''')
+            print("✅ balance_history jadvali yaratildi/yangilandi")
             
             # Yangiliklar
             cursor.execute('''
@@ -184,6 +230,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (created_by) REFERENCES users (id)
                 )
             ''')
+            print("✅ announcements jadvali yaratildi/yangilandi")
             
             # Audit loglari
             cursor.execute('''
@@ -198,6 +245,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             ''')
+            print("✅ audit_logs jadvali yaratildi/yangilandi")
             
             # Tasdiqlangan loyihalar jadvali
             cursor.execute('''
@@ -213,6 +261,7 @@ class DatabasePostgreSQL:
                     FOREIGN KEY (approved_by) REFERENCES users (id)
                 )
             ''')
+            print("✅ approved_projects jadvali yaratildi/yangilandi")
             
             # Dastlabki sozlamalarni qo'shish
             cursor.execute('''
@@ -223,17 +272,19 @@ class DatabasePostgreSQL:
                 ('COMMISSION_RATE', '0.02', 'Komissiya foizi (0.01 = 1%)')
                 ON CONFLICT (key) DO NOTHING
             ''')
+            print("✅ Dastlabki sozlamalar qo'shildi")
             
             conn.commit()
             print("PostgreSQL jadvallari muvaffaqiyatli yaratildi!")
             
         except Exception as e:
-            conn.rollback()
+            if conn:
+                conn.rollback()
             print(f"PostgreSQL jadvallarini yaratishda xato: {e}")
             raise
         finally:
-            cursor.close()
-            conn.close()
+            if conn:
+                conn.close()
     
     def create_user(self, telegram_id, username, first_name, last_name, phone, region, language, referred_by=None):
         """Yangi foydalanuvchi yaratish"""
