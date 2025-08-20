@@ -22,9 +22,9 @@ POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
 POSTGRES_PASSWORD = os.getenv('PGPASSWORD', '')
 
 # Debug uchun
-print(f"Railway Environment Variables:")
-print(f"DATABASE_URL: {'Mavjud' if DATABASE_URL else 'Yo\'q'}")
-print(f"DATABASE_PUBLIC_URL: {'Mavjud' if DATABASE_PUBLIC_URL else 'Yo\'q'}")
+print("Railway Environment Variables:")
+print(f"DATABASE_URL: {'Mavjud' if DATABASE_URL else 'Yoq'}")
+print(f"DATABASE_PUBLIC_URL: {'Mavjud' if DATABASE_PUBLIC_URL else 'Yoq'}")
 print(f"PGHOST: {POSTGRES_HOST}")
 print(f"PGPORT: {POSTGRES_PORT}")
 print(f"PGDATABASE: {POSTGRES_DB}")
