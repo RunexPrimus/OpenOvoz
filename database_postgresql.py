@@ -24,12 +24,18 @@ class DatabasePostgreSQL:
             try:
                 from urllib.parse import urlparse
                 parsed = urlparse(DATABASE_URL)
+                # SSL rejimini aniqroq sozlash
+                ssl_mode = 'require' if 'railway' in DATABASE_URL.lower() else 'prefer'
+                
                 return {
                     'host': parsed.hostname,
                     'port': parsed.port or 5432,
                     'database': parsed.path[1:],  # /database_name -> database_name
                     'user': parsed.username,
-                    'password': parsed.password
+                    'password': parsed.password,
+                    'sslmode': ssl_mode,
+                    'connect_timeout': 30,
+                    'application_name': 'BotopneBot'
                 }
             except Exception as e:
                 print(f"DATABASE_URL parse qilishda xato: {e}")
@@ -39,7 +45,10 @@ class DatabasePostgreSQL:
                     'port': POSTGRES_PORT,
                     'database': POSTGRES_DB,
                     'user': POSTGRES_USER,
-                    'password': POSTGRES_PASSWORD
+                    'password': POSTGRES_PASSWORD,
+                    'sslmode': 'prefer',
+                    'connect_timeout': 30,
+                    'application_name': 'BotopneBot'
                 }
         else:
             # Fallback uchun individual parametrlar (faqat local development uchun)
@@ -49,20 +58,33 @@ class DatabasePostgreSQL:
                 'port': POSTGRES_PORT,
                 'database': POSTGRES_DB,
                 'user': POSTGRES_USER,
-                'password': POSTGRES_PASSWORD
+                'password': POSTGRES_PASSWORD,
+                'sslmode': 'prefer',
+                'connect_timeout': 30,
+                'application_name': 'BotopneBot'
             }
     
     def get_connection(self):
         """PostgreSQL ulanishini olish"""
-        max_retries = 3
-        retry_delay = 2  # sekund
+        max_retries = 5
+        retry_delay = 1  # sekund
         
         for attempt in range(max_retries):
             try:
                 print(f"Ulanish urinishi {attempt + 1}/{max_retries}...")
+                print(f"Connection params: host={self.connection_params.get('host', 'N/A')}, port={self.connection_params.get('port', 'N/A')}, database={self.connection_params.get('database', 'N/A')}")
+                
                 conn = psycopg2.connect(**self.connection_params)
                 conn.autocommit = False
                 print("PostgreSQL ulanish muvaffaqiyatli!")
+                
+                # Connection ni test qilish
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+                print("PostgreSQL connection test muvaffaqiyatli!")
+                
                 return conn
             except psycopg2.OperationalError as e:
                 print(f"PostgreSQL ulanishda xato (urinish {attempt + 1}): {e}")
@@ -70,12 +92,18 @@ class DatabasePostgreSQL:
                     print(f"{retry_delay} soniyadan keyin qayta urinish...")
                     import time
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # Har safar 2 barobar ko'paytirish
+                    retry_delay = min(retry_delay * 2, 30)  # Exponential backoff, max 30 seconds
                 else:
-                    print("Barcha urinishlar muvaffaqiyatsiz. Xatolik:")
+                    print("Barcha urinishlar muvaffaqiyatsiz tugadi!")
+                    print(f"Final error: {e}")
                     raise
+            except psycopg2.Error as e:
+                print(f"PostgreSQL xatosi: {e}")
+                print(f"Xato kodi: {e.pgcode if hasattr(e, 'pgcode') else 'N/A'}")
+                raise
             except Exception as e:
-                print(f"Boshqa xato: {e}")
+                print(f"Kutilmagan xato: {e}")
+                print(f"Xato turi: {type(e).__name__}")
                 raise
     
     def init_database(self):
