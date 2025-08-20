@@ -89,7 +89,11 @@ MESSAGES = {
         'project_deleted_success': '✅ **{project_name}** loyihasi muvaffaqiyatli o\'chirildi!\n\n🗑 Barcha bog\'liq ma\'lumotlar tozalandi.',
         'project_delete_cancelled': '❌ Loyiha o\'chirish bekor qilindi.',
         'project_delete_error': '❌ Loyiha o\'chirishda xatolik yuz berdi: {error}',
-        'no_projects_to_delete': '📭 O\'chirish uchun loyihalar yo\'q.'
+        'no_projects_to_delete': '📭 O\'chirish uchun loyihalar yo\'q.',
+        'report_generating': '📋 *Hisobot yaratilmoqda...*\n\n⏳ Ma\'lumotlar yig\'ilmoqda...',
+        'report_success': '✅ *Hisobot muvaffaqiyatli yaratildi!*\n\n📊 Excel fayl yuborildi.',
+        'report_error': '❌ *Hisobot yaratishda xato yuz berdi!*\n\nXato: {error}',
+        'report_no_data': '❌ Hisobot ma\'lumotlari topilmadi!'
     },
     
     'ru': {
@@ -180,7 +184,11 @@ MESSAGES = {
         'project_deleted_success': '✅ Проект **{project_name}** успешно удален!\n\n🗑 Все связанные данные очищены.',
         'project_delete_cancelled': '❌ Удаление проекта отменено.',
         'project_delete_error': '❌ Произошла ошибка при удалении проекта: {error}',
-        'no_projects_to_delete': '📭 Нет проектов для удаления.'
+        'no_projects_to_delete': '📭 Нет проектов для удаления.',
+        'report_generating': '📋 *Создается отчет...*\n\n⏳ Собираются данные...',
+        'report_success': '✅ *Отчет успешно создан!*\n\n📊 Excel файл отправлен.',
+        'report_error': '❌ *Произошла ошибка при создании отчета!*\n\nОшибка: {error}',
+        'report_no_data': '❌ Данные для отчета не найдены!'
     }
 }
 

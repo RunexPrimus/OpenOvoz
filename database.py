@@ -1222,3 +1222,147 @@ class Database:
             return []
         finally:
             conn.close()
+    
+    def get_comprehensive_report_data(self):
+        """To'liq hisobot uchun barcha ma'lumotlarni olish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # 1. Foydalanuvchilar va ularning ovozlari
+            cursor.execute("""
+                SELECT 
+                    u.id,
+                    u.telegram_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    u.phone,
+                    u.region,
+                    u.language,
+                    u.referral_code,
+                    u.balance,
+                    u.pending_balance,
+                    u.total_earned,
+                    u.total_withdrawn,
+                    u.created_at,
+                    COUNT(v.id) as total_votes,
+                    COUNT(DISTINCT v.season_id) as seasons_voted
+                FROM users u
+                LEFT JOIN votes v ON u.id = v.user_id
+                WHERE u.is_active = 1
+                GROUP BY u.id
+                ORDER BY u.created_at DESC
+            """)
+            users_data = cursor.fetchall()
+            
+            # 2. Ovoz berish tarixi
+            cursor.execute("""
+                SELECT 
+                    v.id,
+                    v.user_id,
+                    u.telegram_id,
+                    u.first_name,
+                    u.last_name,
+                    p.name as project_name,
+                    s.name as season_name,
+                    v.created_at as vote_date
+                FROM votes v
+                JOIN users u ON v.user_id = u.id
+                JOIN projects p ON v.project_id = p.id
+                JOIN seasons s ON v.season_id = s.id
+                ORDER BY v.created_at DESC
+            """)
+            votes_data = cursor.fetchall()
+            
+            # 3. Pul chiqarish so'rovlari
+            cursor.execute("""
+                SELECT 
+                    wr.id,
+                    wr.user_id,
+                    u.telegram_id,
+                    u.first_name,
+                    u.last_name,
+                    u.phone,
+                    wr.amount,
+                    wr.commission,
+                    wr.net_amount,
+                    wr.method,
+                    wr.account_details,
+                    wr.status,
+                    wr.created_at,
+                    wr.processed_at
+                FROM withdrawal_requests wr
+                JOIN users u ON wr.user_id = u.id
+                ORDER BY wr.created_at DESC
+            """)
+            withdrawals_data = cursor.fetchall()
+            
+            # 4. Balans tarixi
+            cursor.execute("""
+                SELECT 
+                    bh.id,
+                    bh.user_id,
+                    u.telegram_id,
+                    u.first_name,
+                    u.last_name,
+                    bh.amount,
+                    bh.type,
+                    bh.description,
+                    bh.status,
+                    bh.created_at
+                FROM balance_history bh
+                JOIN users u ON bh.user_id = u.id
+                ORDER BY bh.created_at DESC
+            """)
+            balance_history_data = cursor.fetchall()
+            
+            # 5. Loyihalar
+            cursor.execute("""
+                SELECT 
+                    p.id,
+                    p.name,
+                    p.budget,
+                    p.region,
+                    p.status,
+                    s.name as season_name,
+                    COUNT(v.id) as total_votes,
+                    p.created_at
+                FROM projects p
+                LEFT JOIN seasons s ON p.season_id = s.id
+                LEFT JOIN votes v ON p.id = v.project_id
+                GROUP BY p.id
+                ORDER BY p.created_at DESC
+            """)
+            projects_data = cursor.fetchall()
+            
+            # 6. Tasdiqlangan loyihalar
+            cursor.execute("""
+                SELECT 
+                    ap.id,
+                    ap.name,
+                    ap.link,
+                    ap.status,
+                    u.first_name as approved_by_name,
+                    ap.approved_at,
+                    ap.created_at
+                FROM approved_projects ap
+                JOIN users u ON ap.approved_by = u.id
+                ORDER BY ap.created_at DESC
+            """)
+            approved_projects_data = cursor.fetchall()
+            
+            return {
+                'users': users_data,
+                'votes': votes_data,
+                'withdrawals': withdrawals_data,
+                'balance_history': balance_history_data,
+                'projects': projects_data,
+                'approved_projects': approved_projects_data
+            }
+            
+        except Exception as e:
+            print(f"Hisobot ma'lumotlarini olishda xato: {e}")
+            return {}
+        finally:
+            conn.close()

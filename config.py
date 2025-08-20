@@ -11,10 +11,10 @@ SUPER_ADMIN_IDS = [int(id) for id in os.getenv('SUPER_ADMIN_IDS', '').split(',')
 # Database
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'botopne.db')
 
-# Redis (rate limiting uchun)
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_DB = int(os.getenv('REDIS_DB', 0))
+# Redis (rate limiting uchun) - Render'da Redis yo'q
+# REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+# REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+# REDIS_DB = int(os.getenv('REDIS_DB', 0))
 
 # Bonus va komissiya (database dan olinadi, default qiymatlar)
 REFERRAL_BONUS = 1000  # Referal uchun bonus (default)

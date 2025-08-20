@@ -74,11 +74,11 @@ class BotopneBot:
                     MessageHandler(filters.Regex('^📖 Qo\'llanma$|^📖 Инструкция$'), self.help_menu),
                     MessageHandler(filters.Regex('^ℹ️ Profil$|^ℹ️ Профиль$'), self.profile_menu),
                     MessageHandler(filters.Regex('^📢 Yangiliklar$|^📢 Новости$'), self.news_menu),
-                    MessageHandler(filters.Regex('^🛠 Admin panel$|^🛠 Панель администратора$'), self.admin_menu),
                     MessageHandler(filters.Regex('^🔙 Orqaga$|^🔙 Назад$'), self.back_to_main),
                     MessageHandler(filters.Regex('^💸 Pul chiqarish$|^💸 Вывод средств$'), self.withdrawal_menu),
                     MessageHandler(filters.Regex('^📊 Tarix$|^📊 История$'), self.balance_history),
-                    MessageHandler(filters.Regex('^📋 Qoidalar$|^📋 Правила$'), self.rules_menu)
+                    MessageHandler(filters.Regex('^📋 Qoidalar$|^📋 Правила$'), self.rules_menu),
+                    MessageHandler(filters.Regex('^🛠 Admin panel$|^🛠 Панель администратора$'), self.admin_menu)
                 ],
                 WITHDRAWAL_ACCOUNT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.withdrawal_account_received),
@@ -97,7 +97,10 @@ class BotopneBot:
         
         # Admin conversation handler
         admin_conv_handler = ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex('^🛠 Admin panel$|^🛠 Панель администратора$'), self.admin_menu)],
+            entry_points=[
+                MessageHandler(filters.Regex('^🛠 Admin panel$|^🛠 Панель администратора$'), self.admin_menu),
+                MessageHandler(filters.Regex('^📋 Hisobot yuklab olish$|^📋 Скачать отчет$'), self.generate_report)
+            ],
             states={
                 ADMIN_MENU: [
                     MessageHandler(filters.Regex('^📊 Statistikalar$|^📊 Статистика$'), self.admin_statistics),
@@ -105,6 +108,7 @@ class BotopneBot:
                     MessageHandler(filters.Regex('^💰 Pul berish$|^💰 Выплаты$'), self.admin_payment_menu),
                     MessageHandler(filters.Regex('^📊 Reytinglar$|^📊 Рейтинги$'), self.admin_ratings),
                     MessageHandler(filters.Regex('^📝 Yangiliklar$|^📝 Новости$'), self.start_news_creation),
+                    MessageHandler(filters.Regex('^📋 Hisobot yuklab olish$|^📋 Скачать отчет$'), self.generate_report),
                     MessageHandler(filters.Regex('🔙 Asosiy menyu$|^🔙 Главное меню$'), self.back_to_main)
                 ]
             },
@@ -131,7 +135,7 @@ class BotopneBot:
         # Screenshot verification conversation handler
         screenshot_conv_handler = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(self.handle_approved_project_vote, pattern='^vote_project_\d+$')
+                CallbackQueryHandler(self.handle_approved_project_vote, pattern=r'^vote_project_\d+$')
             ],
             states={
                 SCREENSHOT_REQUEST: [
@@ -153,7 +157,7 @@ class BotopneBot:
         # Loyiha tahrirlash conversation handler
         edit_project_conv_handler = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(self.start_edit_project, pattern='^edit_(name|link)_\d+$')
+                CallbackQueryHandler(self.start_edit_project, pattern=r'^edit_(name|link)_\d+$')
             ],
             states={
                 EDIT_PROJECT_NAME: [
@@ -540,7 +544,7 @@ class BotopneBot:
                     ),
                     InlineKeyboardButton(
                         f"Ovoz berish❗️",
-                        url=project['link']
+                        url=project['link'] if project['link'] and project['link'].startswith(('http://', 'https://')) else '#'
                     )
                 ])
         
@@ -3314,6 +3318,211 @@ class BotopneBot:
             
         except Exception as e:
             print(f"Loyiha o'chirilgani haqida xabar yuborishda xato: {e}")
+    
+    async def generate_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """To'liq hisobot yaratish va Excel fayl sifatida yuklab olish"""
+        user = update.effective_user
+        
+        # Admin huquqlarini tekshirish
+        if user.id not in ADMIN_IDS and user.id not in SUPER_ADMIN_IDS:
+            await update.message.reply_text(get_message('admin_access_denied', 'uz'))
+            return
+        
+        db_user = self.db.get_user(user.id)
+        language = db_user['language']
+        
+        # Hisobot yaratishni boshlash xabari
+        await update.message.reply_text(
+            "📋 *Hisobot yaratilmoqda...*\n\n"
+            "⏳ Ma'lumotlar yig'ilmoqda...",
+            parse_mode='Markdown'
+        )
+        
+        try:
+            # Barcha ma'lumotlarni olish
+            report_data = self.db.get_comprehensive_report_data()
+            
+            if not report_data:
+                await update.message.reply_text("❌ Hisobot ma'lumotlari topilmadi!")
+                return
+            
+            # Excel fayl yaratish
+            import pandas as pd
+            from datetime import datetime
+            import io
+            
+            # Excel writer yaratish
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                
+                # 1. Foydalanuvchilar jadvali
+                users_df = pd.DataFrame([
+                    {
+                        'ID': row[0],
+                        'Telegram ID': row[1],
+                        'Username': row[2] or 'N/A',
+                        'Ism': row[3] or 'N/A',
+                        'Familiya': row[4] or 'N/A',
+                        'Telefon': row[5] or 'N/A',
+                        'Hudud': row[6] or 'N/A',
+                        'Til': row[7] or 'uz',
+                        'Referal kodi': row[8] or 'N/A',
+                        'Balans': row[9] or 0,
+                        'Kutilayotgan': row[10] or 0,
+                        'Jami topilgan': row[11] or 0,
+                        'Jami chiqarilgan': row[12] or 0,
+                        'Ro\'yxatdan o\'tish': row[13],
+                        'Jami ovozlar': row[14] or 0,
+                        'Ovoz bergan mavsumlar': row[15] or 0
+                    }
+                    for row in report_data['users']
+                ])
+                users_df.to_excel(writer, sheet_name='Foydalanuvchilar', index=False)
+                
+                # 2. Ovoz berish tarixi
+                if report_data['votes']:
+                    votes_df = pd.DataFrame([
+                        {
+                            'Ovoz ID': row[0],
+                            'Foydalanuvchi ID': row[1],
+                            'Telegram ID': row[2],
+                            'Ism': row[3] or 'N/A',
+                            'Familiya': row[4] or 'N/A',
+                            'Loyiha nomi': row[5] or 'N/A',
+                            'Mavsum': row[6] or 'N/A',
+                            'Ovoz berish vaqti': row[7]
+                        }
+                        for row in report_data['votes']
+                    ])
+                    votes_df.to_excel(writer, sheet_name='Ovoz berish tarixi', index=False)
+                
+                # 3. Pul chiqarish so'rovlari
+                if report_data['withdrawals']:
+                    withdrawals_df = pd.DataFrame([
+                        {
+                            'So\'rov ID': row[0],
+                            'Foydalanuvchi ID': row[1],
+                            'Telegram ID': row[2],
+                            'Ism': row[3] or 'N/A',
+                            'Familiya': row[4] or 'N/A',
+                            'Telefon': row[5] or 'N/A',
+                            'Miqdor': row[6] or 0,
+                            'Komissiya': row[7] or 0,
+                            'Olinadigan': row[8] or 0,
+                            'Usul': row[9] or 'N/A',
+                            'Hisob ma\'lumotlari': row[10] or 'N/A',
+                            'Holat': row[11] or 'N/A',
+                            'So\'rov vaqti': row[12],
+                            'Tasdiqlash vaqti': row[13] or 'N/A'
+                        }
+                        for row in report_data['withdrawals']
+                    ])
+                    withdrawals_df.to_excel(writer, sheet_name='Pul chiqarish', index=False)
+                
+                # 4. Balans tarixi
+                if report_data['balance_history']:
+                    balance_df = pd.DataFrame([
+                        {
+                            'Tarix ID': row[0],
+                            'Foydalanuvchi ID': row[1],
+                            'Telegram ID': row[2],
+                            'Ism': row[3] or 'N/A',
+                            'Familiya': row[4] or 'N/A',
+                            'Miqdor': row[5] or 0,
+                            'Turi': row[6] or 'N/A',
+                            'Izoh': row[7] or 'N/A',
+                            'Holat': row[8] or 'N/A',
+                            'Vaqt': row[9]
+                        }
+                        for row in report_data['balance_history']
+                    ])
+                    balance_df.to_excel(writer, sheet_name='Balans tarixi', index=False)
+                
+                # 5. Loyihalar
+                if report_data['projects']:
+                    projects_df = pd.DataFrame([
+                        {
+                            'Loyiha ID': row[0],
+                            'Nomi': row[1] or 'N/A',
+                            'Budjet': row[2] or 0,
+                            'Hudud': row[3] or 'N/A',
+                            'Holat': row[4] or 'N/A',
+                            'Mavsum': row[5] or 'N/A',
+                            'Jami ovozlar': row[6] or 0,
+                            'Yaratilgan vaqti': row[7]
+                        }
+                        for row in report_data['projects']
+                    ])
+                    projects_df.to_excel(writer, sheet_name='Loyihalar', index=False)
+                
+                # 6. Tasdiqlangan loyihalar
+                if report_data['approved_projects']:
+                    approved_df = pd.DataFrame([
+                        {
+                            'Loyiha ID': row[0],
+                            'Nomi': row[1] or 'N/A',
+                            'Havola': row[2] or 'N/A',
+                            'Holat': row[3] or 'N/A',
+                            'Tasdiqlagan': row[4] or 'N/A',
+                            'Tasdiqlash vaqti': row[5],
+                            'Yaratilgan vaqti': row[6]
+                        }
+                        for row in report_data['approved_projects']
+                    ])
+                    approved_df.to_excel(writer, sheet_name='Tasdiqlangan loyihalar', index=False)
+                
+                # 7. Umumiy statistika
+                stats_data = {
+                    'Statistika': [
+                        'Jami foydalanuvchilar',
+                        'Jami ovozlar',
+                        'Jami loyihalar',
+                        'Jami tasdiqlangan loyihalar',
+                        'Jami pul chiqarish so\'rovlari',
+                        'Jami balans tarixi yozuvlari'
+                    ],
+                    'Qiymat': [
+                        len(report_data['users']),
+                        len(report_data['votes']),
+                        len(report_data['projects']),
+                        len(report_data['approved_projects']),
+                        len(report_data['withdrawals']),
+                        len(report_data['balance_history'])
+                    ]
+                }
+                stats_df = pd.DataFrame(stats_data)
+                stats_df.to_excel(writer, sheet_name='Umumiy statistika', index=False)
+            
+            # Excel faylni tayyorlash
+            output.seek(0)
+            
+            # Fayl nomini yaratish
+            current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"Botopne_Hisobot_{current_time}.xlsx"
+            
+            # Excel faylni yuborish
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=output,
+                filename=filename,
+                caption=f"📋 *To\'liq hisobot*\n\n"
+                        f"📅 Yaratilgan vaqti: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"📊 Jami foydalanuvchilar: {len(report_data['users'])}\n"
+                        f"🗳 Jami ovozlar: {len(report_data['votes'])}\n"
+                        f"🏗 Jami loyihalar: {len(report_data['projects']) + len(report_data['approved_projects'])}\n"
+                        f"💸 Jami pul chiqarish so\'rovlari: {len(report_data['withdrawals'])}\n\n"
+                        f"✅ Excel fayl muvaffaqiyatli yaratildi!",
+                parse_mode='Markdown'
+            )
+            
+            print(f"Hisobot yaratildi va yuborildi: {filename}")
+            
+        except Exception as e:
+            error_message = f"❌ *Hisobot yaratishda xato yuz berdi!*\n\nXato: {str(e)}"
+            await update.message.reply_text(error_message, parse_mode='Markdown')
+            print(f"Hisobot yaratishda xato: {e}")
+            import traceback
+            traceback.print_exc()
 
     def run(self):
         """Botni ishga tushirish"""
