@@ -9,13 +9,16 @@ ADMIN_IDS = [int(id) for id in os.getenv('ADMIN_IDS', '').split(',') if id]
 SUPER_ADMIN_IDS = [int(id) for id in os.getenv('SUPER_ADMIN_IDS', '').split(',') if id]
 
 # Railway PostgreSQL Configuration
-POSTGRES_HOST = os.getenv('PGHOST', 'postgres.railway.internal')
+# Railway avtomatik DATABASE_URL ni beradi
+DATABASE_URL = os.getenv('DATABASE_URL', None)
+DATABASE_PUBLIC_URL = os.getenv('DATABASE_PUBLIC_URL', None)
+
+# Fallback uchun individual parametrlar (local development uchun)
+POSTGRES_HOST = os.getenv('PGHOST', 'localhost')
 POSTGRES_PORT = int(os.getenv('PGPORT', 5432))
 POSTGRES_DB = os.getenv('PGDATABASE', 'railway')
 POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
 POSTGRES_PASSWORD = os.getenv('PGPASSWORD', '')
-DATABASE_URL = os.getenv('DATABASE_URL', None)
-DATABASE_PUBLIC_URL = os.getenv('DATABASE_PUBLIC_URL', None)
 
 # Bonus va komissiya (database dan olinadi, default qiymatlar)
 REFERRAL_BONUS = 1000  # Referal uchun bonus (default)
