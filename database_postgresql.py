@@ -445,6 +445,25 @@ class DatabasePostgreSQL:
             cursor.close()
             conn.close()
     
+    def get_project_by_id(self, project_id):
+        """Loyihani ID bo'yicha olish"""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            cursor.execute("""
+                SELECT p.*, s.name as season_name
+                FROM projects p
+                LEFT JOIN seasons s ON p.season_id = s.id
+                WHERE p.id = %s
+            """, (project_id,))
+            
+            project = cursor.fetchone()
+            return dict(project) if project else None
+        finally:
+            cursor.close()
+            conn.close()
+
     def get_approved_projects(self):
         """Tasdiqlangan loyihalarni olish"""
         conn = self.get_connection()
@@ -464,6 +483,22 @@ class DatabasePostgreSQL:
             cursor.close()
             conn.close()
     
+    def get_approved_project_by_id(self, project_id):
+        """Tasdiqlangan loyihani ID bo'yicha olish"""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            cursor.execute("""
+                SELECT * FROM approved_projects WHERE id = %s
+            """, (project_id,))
+            
+            project = cursor.fetchone()
+            return dict(project) if project else None
+        finally:
+            cursor.close()
+            conn.close()
+
     def get_setting(self, key, default=None):
         """Sozlama qiymatini olish"""
         conn = self.get_connection()
@@ -1366,3 +1401,93 @@ class DatabasePostgreSQL:
             import traceback
             print(f"Xato izi: {traceback.format_exc()}")
             return None
+
+    def add_payment_record(self, user_id, amount, payment_type, description, status):
+        """To'lov yozuvini qo'shish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # To'lov yozuvini qo'shish
+            cursor.execute("""
+                INSERT INTO balance_history (user_id, amount, type, description, status, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (user_id, amount, payment_type, description, status, datetime.now()))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"To'lov yozuvini qo'shishda xato: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def delete_project(self, project_id):
+        """Loyihani o'chirish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Avval loyiha ma'lumotlarini olish (xabar uchun)
+            cursor.execute("""
+                SELECT name FROM projects WHERE id = %s
+            """, (project_id,))
+            
+            project = cursor.fetchone()
+            if not project:
+                return False, "Loyiha topilmadi"
+            
+            project_name = project[0]
+            
+            # Loyihaga berilgan ovozlarni o'chirish
+            cursor.execute("""
+                DELETE FROM votes WHERE project_id = %s
+            """, (project_id,))
+            
+            # Loyihani o'chirish
+            cursor.execute("""
+                DELETE FROM projects WHERE id = %s
+            """, (project_id,))
+            
+            conn.commit()
+            return True, project_name
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Loyihani o'chirishda xato: {e}")
+            return False, str(e)
+        finally:
+            conn.close()
+
+    def delete_approved_project(self, project_id):
+        """Tasdiqlangan loyihani o'chirish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Avval loyiha ma'lumotlarini olish (xabar uchun)
+            cursor.execute("""
+                SELECT name FROM approved_projects WHERE id = %s
+            """, (project_id,))
+            
+            project = cursor.fetchone()
+            if not project:
+                return False, "Loyiha topilmadi"
+            
+            project_name = project[0]
+            
+            # Loyihani o'chirish
+            cursor.execute("""
+                DELETE FROM approved_projects WHERE id = %s
+            """, (project_id,))
+            
+            conn.commit()
+            return True, project_name
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Tasdiqlangan loyihani o'chirishda xato: {e}")
+            return False, str(e)
+        finally:
+            conn.close()

@@ -3322,14 +3322,28 @@ class BotopneBot:
         # Loyiha ID ni olish
         project_id = int(query.data.split('_')[3])
         
-        # Loyihani bazadan olish
+        # Avval mavsum loyihalarida qidirish
         project = self.db.get_project_by_id(project_id)
+        project_type = 'season'
+        
+        # Agar mavsum loyihasida topilmasa, tasdiqlangan loyihalarda qidirish
+        if not project:
+            project = self.db.get_approved_project_by_id(project_id)
+            project_type = 'approved'
+        
         if not project:
             await query.edit_message_text(
                 get_message('project_not_found', language),
                 reply_markup=get_back_keyboard()
             )
             return
+        
+        # Loyiha turini context ga saqlash
+        context.user_data['project_to_delete'] = {
+            'id': project_id,
+            'type': project_type,
+            'name': project['name']
+        }
         
         # Tasdiqlash xabari
         confirmation_text = get_message('project_delete_confirmation', language, project_name=project['name'])
@@ -3372,11 +3386,26 @@ class BotopneBot:
         # Loyiha ID ni olish
         project_id = int(query.data.split('_')[2])
         
-        # Loyihani o'chirish
-        success, result = self.db.delete_project(project_id)
+        # Context dan loyiha ma'lumotlarini olish
+        project_info = context.user_data.get('project_to_delete')
+        if not project_info:
+            await query.edit_message_text(
+                "❌ *Xato yuz berdi!*\n\nLoyiha ma'lumotlari topilmadi. Iltimos, qaytadan urinib ko'ring.",
+                parse_mode='Markdown',
+                reply_markup=get_back_keyboard()
+            )
+            return
+        
+        project_type = project_info['type']
+        project_name = project_info['name']
+        
+        # Loyiha turiga qarab o'chirish
+        if project_type == 'season':
+            success, result = self.db.delete_project(project_id)
+        else:  # approved
+            success, result = self.db.delete_approved_project(project_id)
         
         if success:
-            project_name = result
             # Muvaffaqiyatli o'chirish xabari
             success_message = get_message('project_deleted_success', language, project_name=project_name)
             
@@ -3397,6 +3426,9 @@ class BotopneBot:
                 parse_mode='Markdown',
                 reply_markup=get_back_keyboard()
             )
+        
+        # Context ni tozalash
+        context.user_data.pop('project_to_delete', None)
 
     async def broadcast_project_deletion_to_all_users(self, project_name: str, language: str):
         """Loyiha o'chirilgani haqida barcha foydalanuvchilarga xabar yuborish"""
