@@ -7,7 +7,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
-from database import Database
+from database_unified import db
 from keyboards import *
 from messages import get_message
 from config import *
@@ -46,7 +46,7 @@ NEWS_APPROVAL = 22
 
 class BotopneBot:
     def __init__(self):
-        self.db = Database()
+        self.db = db
         self.application = Application.builder().token(BOT_TOKEN).build()
         self.setup_handlers()
     

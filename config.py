@@ -8,13 +8,14 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_IDS = [int(id) for id in os.getenv('ADMIN_IDS', '').split(',') if id]
 SUPER_ADMIN_IDS = [int(id) for id in os.getenv('SUPER_ADMIN_IDS', '').split(',') if id]
 
-# Database
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'botopne.db')
-
-# Redis (rate limiting uchun) - Render'da Redis yo'q
-# REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-# REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-# REDIS_DB = int(os.getenv('REDIS_DB', 0))
+# Railway PostgreSQL Configuration
+POSTGRES_HOST = os.getenv('PGHOST', 'postgres.railway.internal')
+POSTGRES_PORT = int(os.getenv('PGPORT', 5432))
+POSTGRES_DB = os.getenv('PGDATABASE', 'railway')
+POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
+POSTGRES_PASSWORD = os.getenv('PGPASSWORD', '')
+DATABASE_URL = os.getenv('DATABASE_URL', None)
+DATABASE_PUBLIC_URL = os.getenv('DATABASE_PUBLIC_URL', None)
 
 # Bonus va komissiya (database dan olinadi, default qiymatlar)
 REFERRAL_BONUS = 1000  # Referal uchun bonus (default)
@@ -48,4 +49,4 @@ REGIONS = {
 }
 
 # Admin kanal ID - ovoz berish tasdiqlashlari uchun
-ADMIN_CHANNEL_ID = int(os.getenv('ADMIN_CHANNEL_ID', -1002796086920)) # O'zingizning admin kanal ID sini kiriting
+ADMIN_CHANNEL_ID = int(os.getenv('ADMIN_CHANNEL_ID', -1002796086920))
