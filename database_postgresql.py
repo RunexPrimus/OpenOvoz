@@ -587,7 +587,15 @@ class DatabasePostgreSQL:
         conn = None
         try:
             print(f"Loyiha yaratish boshlandi: {project_data}")
-            conn = self.get_connection()
+            
+            # Database ulanishini tekshirish
+            try:
+                conn = self.get_connection()
+                print("Database ulanish muvaffaqiyatli!")
+            except Exception as e:
+                print(f"Database ulanishda xato: {e}")
+                return None
+            
             cursor = conn.cursor()
             
             # Ma'lumotlarni tekshirish
@@ -598,6 +606,20 @@ class DatabasePostgreSQL:
                     return None
             
             print(f"Loyiha ma'lumotlari to'g'ri, bazaga saqlash boshlandi...")
+            
+            # Jadval mavjudligini tekshirish
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'approved_projects'
+                )
+            """)
+            
+            if not cursor.fetchone()[0]:
+                print("approved_projects jadvali mavjud emas!")
+                return None
+            
+            print("approved_projects jadvali mavjud, INSERT boshlandi...")
             
             cursor.execute("""
                 INSERT INTO approved_projects (name, link, status, approved_by, approved_at, created_at)
@@ -879,132 +901,172 @@ class DatabasePostgreSQL:
     
     def get_comprehensive_report_data(self):
         """To'liq hisobot uchun barcha ma'lumotlarni olish"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+        conn = None
         try:
+            print("To'liq hisobot ma'lumotlari yig'ilmoqda...")
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
             # 1. Foydalanuvchilar va ularning ovozlari
-            cursor.execute("""
-                SELECT 
-                    u.id,
-                    u.telegram_id,
-                    u.username,
-                    u.first_name,
-                    u.last_name,
-                    u.phone,
-                    u.region,
-                    u.language,
-                    u.referral_code,
-                    u.balance,
-                    u.pending_balance,
-                    u.total_earned,
-                    u.total_withdrawn,
-                    u.created_at,
-                    COUNT(v.id) as total_votes,
-                    COUNT(DISTINCT v.season_id) as seasons_voted
-                FROM users u
-                LEFT JOIN votes v ON u.id = v.user_id
-                WHERE u.is_active = TRUE
-                GROUP BY u.id
-                ORDER BY u.created_at DESC
-            """)
-            users_data = cursor.fetchall()
+            print("Foydalanuvchilar ma'lumotlari olinmoqda...")
+            try:
+                cursor.execute("""
+                    SELECT 
+                        u.id,
+                        u.telegram_id,
+                        u.username,
+                        u.first_name,
+                        u.last_name,
+                        u.phone,
+                        u.region,
+                        u.language,
+                        u.referral_code,
+                        u.balance,
+                        u.pending_balance,
+                        u.total_earned,
+                        u.total_withdrawn,
+                        u.created_at,
+                        COUNT(v.id) as total_votes,
+                        COUNT(DISTINCT v.season_id) as seasons_voted
+                    FROM users u
+                    LEFT JOIN votes v ON u.id = v.user_id
+                    WHERE u.is_active = TRUE
+                    GROUP BY u.id
+                    ORDER BY u.created_at DESC
+                """)
+                users_data = cursor.fetchall()
+                print(f"Foydalanuvchilar ma'lumotlari olindi: {len(users_data)} ta")
+            except Exception as e:
+                print(f"Foydalanuvchilar ma'lumotlarini olishda xato: {e}")
+                users_data = []
             
             # 2. Ovoz berish tarixi
-            cursor.execute("""
-                SELECT 
-                    v.id,
-                    v.user_id,
-                    u.telegram_id,
-                    u.first_name,
-                    u.last_name,
-                    p.name as project_name,
-                    s.name as season_name,
-                    v.created_at as vote_date
-                FROM votes v
-                JOIN users u ON v.user_id = u.id
-                JOIN projects p ON v.project_id = p.id
-                JOIN seasons s ON v.season_id = s.id
-                ORDER BY v.created_at DESC
-            """)
-            votes_data = cursor.fetchall()
+            print("Ovoz berish tarixi olinmoqda...")
+            try:
+                cursor.execute("""
+                    SELECT 
+                        v.id,
+                        v.user_id,
+                        u.telegram_id,
+                        u.first_name,
+                        u.last_name,
+                        p.name as project_name,
+                        s.name as season_name,
+                        v.created_at as vote_date
+                    FROM votes v
+                    JOIN users u ON v.user_id = u.id
+                    JOIN projects p ON v.project_id = p.id
+                    JOIN seasons s ON v.season_id = s.id
+                    ORDER BY v.created_at DESC
+                """)
+                votes_data = cursor.fetchall()
+                print(f"Ovoz berish tarixi olindi: {len(votes_data)} ta")
+            except Exception as e:
+                print(f"Ovoz berish tarixini olishda xato: {e}")
+                votes_data = []
             
             # 3. Pul chiqarish so'rovlari
-            cursor.execute("""
-                SELECT 
-                    wr.id,
-                    wr.user_id,
-                    u.telegram_id,
-                    u.first_name,
-                    u.last_name,
-                    u.phone,
-                    wr.amount,
-                    wr.commission,
-                    wr.net_amount,
-                    wr.method,
-                    wr.account_details,
-                    wr.status,
-                    wr.created_at,
-                    wr.processed_at
-                FROM withdrawal_requests wr
-                JOIN users u ON wr.user_id = u.id
-                ORDER BY wr.created_at DESC
-            """)
-            withdrawals_data = cursor.fetchall()
+            print("Pul chiqarish so'rovlari olinmoqda...")
+            try:
+                cursor.execute("""
+                    SELECT 
+                        wr.id,
+                        wr.user_id,
+                        u.telegram_id,
+                        u.first_name,
+                        u.last_name,
+                        u.phone,
+                        wr.amount,
+                        wr.commission,
+                        wr.net_amount,
+                        wr.method,
+                        wr.account_details,
+                        wr.status,
+                        wr.created_at,
+                        wr.processed_at
+                    FROM withdrawal_requests wr
+                    JOIN users u ON wr.user_id = u.id
+                    ORDER BY wr.created_at DESC
+                """)
+                withdrawals_data = cursor.fetchall()
+                print(f"Pul chiqarish so'rovlari olindi: {len(withdrawals_data)} ta")
+            except Exception as e:
+                print(f"Pul chiqarish so'rovlarini olishda xato: {e}")
+                withdrawals_data = []
             
             # 4. Balans tarixi
-            cursor.execute("""
-                SELECT 
-                    bh.id,
-                    bh.user_id,
-                    u.telegram_id,
-                    u.first_name,
-                    u.last_name,
-                    bh.amount,
-                    bh.type,
-                    bh.description,
-                    bh.status,
-                    bh.created_at
-                FROM balance_history bh
-                JOIN users u ON bh.user_id = u.id
-                ORDER BY bh.created_at DESC
-            """)
-            balance_history_data = cursor.fetchall()
+            print("Balans tarixi olinmoqda...")
+            try:
+                cursor.execute("""
+                    SELECT 
+                        bh.id,
+                        bh.user_id,
+                        u.telegram_id,
+                        u.first_name,
+                        u.last_name,
+                        bh.amount,
+                        bh.type,
+                        bh.description,
+                        bh.status,
+                        bh.created_at
+                    FROM balance_history bh
+                    JOIN users u ON bh.user_id = u.id
+                    ORDER BY bh.created_at DESC
+                """)
+                balance_history_data = cursor.fetchall()
+                print(f"Balans tarixi olindi: {len(balance_history_data)} ta")
+            except Exception as e:
+                print(f"Balans tarixini olishda xato: {e}")
+                balance_history_data = []
             
             # 5. Loyihalar
-            cursor.execute("""
-                SELECT 
-                    p.id,
-                    p.name,
-                    p.budget,
-                    p.region,
-                    p.status,
-                    s.name as season_name,
-                    COUNT(v.id) as total_votes,
-                    p.created_at
-                FROM projects p
-                LEFT JOIN seasons s ON p.season_id = s.id
-                LEFT JOIN votes v ON p.id = v.project_id
-                GROUP BY p.id
-                ORDER BY p.created_at DESC
-            """)
-            projects_data = cursor.fetchall()
+            print("Loyihalar ma'lumotlari olinmoqda...")
+            try:
+                cursor.execute("""
+                    SELECT 
+                        p.id,
+                        p.name,
+                        p.budget,
+                        p.region,
+                        p.status,
+                        s.name as season_name,
+                        COUNT(v.id) as total_votes,
+                        p.created_at
+                    FROM projects p
+                    LEFT JOIN seasons s ON p.season_id = s.id
+                    LEFT JOIN votes v ON p.id = v.project_id
+                    GROUP BY p.id
+                    ORDER BY p.created_at DESC
+                """)
+                projects_data = cursor.fetchall()
+                print(f"Loyihalar ma'lumotlari olindi: {len(projects_data)} ta")
+            except Exception as e:
+                print(f"Loyihalar ma'lumotlarini olishda xato: {e}")
+                projects_data = []
             
             # 6. Tasdiqlangan loyihalar
-            cursor.execute("""
-                SELECT 
-                    ap.id,
-                    ap.name,
-                    ap.link,
-                    ap.status,
-                    u.first_name as approved_by_name,
-                    ap.approved_at,
-                    ap.created_at
-                FROM approved_projects ap
-                JOIN users u ON ap.approved_by = u.id
-                ORDER BY ap.created_at DESC
-            """)
-            approved_projects_data = cursor.fetchall()
+            print("Tasdiqlangan loyihalar olinmoqda...")
+            try:
+                cursor.execute("""
+                    SELECT 
+                        ap.id,
+                        ap.name,
+                        ap.link,
+                        ap.status,
+                        u.first_name as approved_by_name,
+                        ap.approved_at,
+                        ap.created_at
+                    FROM approved_projects ap
+                    JOIN users u ON ap.approved_by = u.id
+                    ORDER BY ap.created_at DESC
+                """)
+                approved_projects_data = cursor.fetchall()
+                print(f"Tasdiqlangan loyihalar olindi: {len(approved_projects_data)} ta")
+            except Exception as e:
+                print(f"Tasdiqlangan loyihalarni olishda xato: {e}")
+                approved_projects_data = []
+            
+            print("Barcha ma'lumotlar muvaffaqiyatli yig'ildi!")
             
             return {
                 'users': users_data,
@@ -1015,9 +1077,25 @@ class DatabasePostgreSQL:
                 'approved_projects': approved_projects_data
             }
             
+        except Exception as e:
+            print(f"To'liq hisobot ma'lumotlarini olishda xato: {e}")
+            print(f"Xato turi: {type(e).__name__}")
+            import traceback
+            print(f"Xato izi: {traceback.format_exc()}")
+            
+            # Bo'sh ma'lumotlar bilan qaytish
+            return {
+                'users': [],
+                'votes': [],
+                'withdrawals': [],
+                'balance_history': [],
+                'projects': [],
+                'approved_projects': []
+            }
+            
         finally:
-            cursor.close()
-            conn.close()
+            if conn:
+                conn.close()
 
     def create_excel_report(self):
         """Excel hisobot yaratish"""
@@ -1038,6 +1116,26 @@ class DatabasePostgreSQL:
             print("Ma'lumotlar yig'ilmoqda...")
             data = self.get_comprehensive_report_data()
             print(f"Ma'lumotlar yig'ildi: {len(data)} ta jadval")
+            
+            # Ma'lumotlar mavjudligini tekshirish
+            total_records = sum(len(data[key]) for key in data.values())
+            if total_records == 0:
+                print("Ma'lumotlar bazasi bo'sh - bo'sh Excel fayl yaratilmoqda...")
+                # Bo'sh Excel fayl yaratish
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = "Ma'lumot yo'q"
+                
+                ws.cell(row=1, column=1, value="Ma'lumot yo'q")
+                ws.cell(row=2, column=1, value="Ma'lumotlar bazasi bo'sh yoki ma'lumotlar topilmadi")
+                ws.cell(row=3, column=1, value=f"Yaratilgan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                filename = f"botopne_empty_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                wb.save(filename)
+                print(f"Bo'sh Excel hisobot yaratildi: {filename}")
+                return filename
+            
+            print(f"Jami {total_records} ta yozuv topildi, Excel fayl yaratilmoqda...")
             
             # Yangi Excel fayl yaratish
             print("Excel fayl yaratilmoqda...")

@@ -2374,32 +2374,81 @@ class BotopneBot:
         action = query.data.split('_')[0]  # 'approve' yoki 'reject'
         
         if action == 'approve':
-            # Loyihani tasdiqlash va barcha foydalanuvchilarga yuborish
-            project_name = context.user_data['project_name']
-            project_link = context.user_data['project_link']
-            
-            # Loyihani bazaga saqlash
-            project_data = {
-                'name': project_name,
-                'link': project_link,
-                'status': 'approved',
-                'approved_by': user.id,
-                'approved_at': datetime.now()
-            }
-            
-            project_id = self.db.create_approved_project(project_data)
-            
-            if project_id:
-                # Barcha foydalanuvchilarga xabar yuborish
-                await self.broadcast_project_to_all_users(project_name, project_link, language)
+            try:
+                # Loyihani tasdiqlash va barcha foydalanuvchilarga yuborish
+                project_name = context.user_data.get('project_name')
+                project_link = context.user_data.get('project_link')
+                
+                print(f"Loyiha tasdiqlash jarayoni boshlandi:")
+                print(f"Admin: {user.id} ({user.first_name})")
+                print(f"Loyiha nomi: {project_name}")
+                print(f"Loyiha havolasi: {project_link}")
+                
+                # Ma'lumotlarni tekshirish
+                if not project_name or not project_link:
+                    print("Loyiha ma'lumotlari topilmadi context da")
+                    await query.edit_message_text(
+                        "❌ *Loyiha tasdiqlashda xatolik yuz berdi!*\n\n"
+                        "Xato: Loyiha ma'lumotlari topilmadi\n"
+                        "Iltimos, qaytadan urinib ko'ring.",
+                        parse_mode='Markdown',
+                        reply_markup=get_back_keyboard()
+                    )
+                    context.user_data.clear()
+                    return ConversationHandler.END
+                
+                # Loyihani bazaga saqlash
+                project_data = {
+                    'name': project_name,
+                    'link': project_link,
+                    'status': 'approved',
+                    'approved_by': user.id,
+                    'approved_at': datetime.now()
+                }
+                
+                print(f"Database ga saqlash uchun ma'lumotlar: {project_data}")
+                project_id = self.db.create_approved_project(project_data)
+                
+                if project_id:
+                    print(f"Loyiha muvaffaqiyatli yaratildi! ID: {project_id}")
+                    
+                    # Barcha foydalanuvchilarga xabar yuborish
+                    try:
+                        await self.broadcast_project_to_all_users(project_name, project_link, language)
+                        print("Barcha foydalanuvchilarga xabar yuborildi")
+                    except Exception as e:
+                        print(f"Foydalanuvchilarga xabar yuborishda xato: {e}")
+                        # Bu xato loyiha yaratishni to'xtatmaydi
+                    
+                    await query.edit_message_text(
+                        get_message('project_approved_success', language),
+                        reply_markup=get_back_keyboard()
+                    )
+                else:
+                    print("Loyiha yaratilmadi - database dan None qaytdi")
+                    await query.edit_message_text(
+                        "❌ *Loyiha tasdiqlashda xatolik yuz berdi!*\n\n"
+                        "Xato: Database da loyiha yaratilmadi\n\n"
+                        "🔍 *Muammo sababi:*\n"
+                        "• Database ulanish muammosi\n"
+                        "• Ma'lumotlar bazasi xatosi\n"
+                        "• Loyiha ma'lumotlari noto'g'ri",
+                        parse_mode='Markdown',
+                        reply_markup=get_back_keyboard()
+                    )
+                    
+            except Exception as e:
+                print(f"Loyiha tasdiqlashda kutilmagan xato: {e}")
+                print(f"Xato turi: {type(e).__name__}")
+                import traceback
+                print(f"Xato izi: {traceback.format_exc()}")
                 
                 await query.edit_message_text(
-                    get_message('project_approved_success', language),
-                    reply_markup=get_back_keyboard()
-                )
-            else:
-                await query.edit_message_text(
-                    get_message('project_approval_failed', language),
+                    "❌ *Loyiha tasdiqlashda xatolik yuz berdi!*\n\n"
+                    f"Xato: {str(e)}\n\n"
+                    f"🔍 *Xato turi:* {type(e).__name__}\n"
+                    "Iltimos, qaytadan urinib ko'ring yoki admin bilan bog'laning.",
+                    parse_mode='Markdown',
                     reply_markup=get_back_keyboard()
                 )
         else:
