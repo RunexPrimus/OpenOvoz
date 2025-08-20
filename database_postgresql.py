@@ -14,13 +14,16 @@ class DatabasePostgreSQL:
     
     def _get_connection_params(self):
         """PostgreSQL ulanish parametrlarini olish"""
-        # Railway da avval DATABASE_URL ni sinab ko'rish
+        # Railway da avval DATABASE_URL ni sinab ko'rish (eng muhim)
         if DATABASE_URL:
+            print(f"Railway DATABASE_URL ishlatilmoqda: {DATABASE_URL[:50]}...")
             return {'dsn': DATABASE_URL}
         elif DATABASE_PUBLIC_URL:
+            print(f"Railway DATABASE_PUBLIC_URL ishlatilmoqda: {DATABASE_PUBLIC_URL[:50]}...")
             return {'dsn': DATABASE_PUBLIC_URL}
         else:
-            # Fallback uchun individual parametrlar
+            # Fallback uchun individual parametrlar (faqat local development uchun)
+            print(f"Fallback parametrlar ishlatilmoqda: {POSTGRES_HOST}:{POSTGRES_PORT}")
             return {
                 'host': POSTGRES_HOST,
                 'port': POSTGRES_PORT,
