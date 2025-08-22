@@ -2457,7 +2457,7 @@ class BotopneBot:
         
         if action == 'approve':
             try:
-            # Loyihani tasdiqlash va barcha foydalanuvchilarga yuborish
+                # Loyihani tasdiqlash va barcha foydalanuvchilarga yuborish
                 project_name = context.user_data.get('project_name')
                 project_link = context.user_data.get('project_link')
                 
@@ -2478,8 +2478,8 @@ class BotopneBot:
                     )
                     context.user_data.clear()
                     return ConversationHandler.END
-            
-            # Loyihani bazaga saqlash
+                
+                # Loyihani bazaga saqlash
                 # Foydalanuvchining database dagi ID sini olish
                 db_user = self.db.get_user(user.id)
                 if not db_user:
@@ -2494,35 +2494,35 @@ class BotopneBot:
                     context.user_data.clear()
                     return ConversationHandler.END
                 
-            project_data = {
-                'name': project_name,
-                'link': project_link,
-                'status': 'approved',
+                project_data = {
+                    'name': project_name,
+                    'link': project_link,
+                    'status': 'approved',
                     'approved_by': db_user['id'],  # Database dagi ID, telegram_id emas
-                'approved_at': datetime.now()
-            }
-            
+                    'approved_at': datetime.now()
+                }
+                
                 print(f"Database ga saqlash uchun ma'lumotlar: {project_data}")
                 project_id = self.db.create_approved_project(project_data)
-            
+                
                 if project_id:
                     print(f"Loyiha muvaffaqiyatli yaratildi! ID: {project_id}")
                     
-                # Barcha foydalanuvchilarga xabar yuborish
+                    # Barcha foydalanuvchilarga xabar yuborish
                     try:
-                await self.broadcast_project_to_all_users(project_name, project_link, language)
+                        await self.broadcast_project_to_all_users(project_name, project_link, language)
                         print("Barcha foydalanuvchilarga xabar yuborildi")
                     except Exception as e:
                         print(f"Foydalanuvchilarga xabar yuborishda xato: {e}")
                         # Bu xato loyiha yaratishni to'xtatmaydi
-                
-                await query.edit_message_text(
-                    get_message('project_approved_success', language),
-                    reply_markup=get_back_keyboard()
-                )
-            else:
+                    
+                    await query.edit_message_text(
+                        get_message('project_approved_success', language),
+                        reply_markup=get_back_keyboard()
+                    )
+                else:
                     print("Loyiha yaratilmadi - database dan None qaytdi")
-                await query.edit_message_text(
+                    await query.edit_message_text(
                         "❌ *Loyiha tasdiqlashda xatolik yuz berdi!*\n\n"
                         "Xato: Database da loyiha yaratilmadi\n\n"
                         "🔍 *Muammo sababi:*\n"
@@ -3483,7 +3483,7 @@ class BotopneBot:
         
         # Loyiha turiga qarab o'chirish
         if project_type == 'season':
-        success, result = self.db.delete_project(project_id)
+            success, result = self.db.delete_project(project_id)
         else:  # approved
             success, result = self.db.delete_approved_project(project_id)
         
@@ -3684,7 +3684,7 @@ class BotopneBot:
             try:
                 os.remove(filename)
                 print(f"Fayl o'chirildi: {filename}")
-        except Exception as e:
+            except Exception as e:
                 print(f"Fayl o'chirishda xato: {e}")
             
         except Exception as e:
