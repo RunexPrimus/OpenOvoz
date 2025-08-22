@@ -755,7 +755,7 @@ class DatabasePostgreSQL:
             
         except Exception as e:
             if conn:
-            conn.rollback()
+                conn.rollback()
             print(f"Tasdiqlangan loyiha yaratishda xato: {e}")
             print(f"Xato turi: {type(e).__name__}")
             import traceback
@@ -763,7 +763,7 @@ class DatabasePostgreSQL:
             return None
         finally:
             if conn:
-            conn.close()
+                conn.close()
     
     def create_withdrawal_request(self, withdrawal_data):
         """Pul chiqarish so'rovini yaratish"""
@@ -1018,37 +1018,37 @@ class DatabasePostgreSQL:
         conn = None
         try:
             print("To'liq hisobot ma'lumotlari yig'ilmoqda...")
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
             # 1. Foydalanuvchilar va ularning ovozlari
             print("Foydalanuvchilar ma'lumotlari olinmoqda...")
             try:
-            cursor.execute("""
-                SELECT 
-                    u.id,
-                    u.telegram_id,
-                    u.username,
-                    u.first_name,
-                    u.last_name,
-                    u.phone,
-                    u.region,
-                    u.language,
-                    u.referral_code,
-                    u.balance,
-                    u.pending_balance,
-                    u.total_earned,
-                    u.total_withdrawn,
-                    u.created_at,
-                    COUNT(v.id) as total_votes,
-                    COUNT(DISTINCT v.season_id) as seasons_voted
-                FROM users u
-                LEFT JOIN votes v ON u.id = v.user_id
-                WHERE u.is_active = TRUE
-                GROUP BY u.id
-                ORDER BY u.created_at DESC
-            """)
-            users_data = cursor.fetchall()
+                cursor.execute("""
+                    SELECT 
+                        u.id,
+                        u.telegram_id,
+                        u.username,
+                        u.first_name,
+                        u.last_name,
+                        u.phone,
+                        u.region,
+                        u.language,
+                        u.referral_code,
+                        u.balance,
+                        u.pending_balance,
+                        u.total_earned,
+                        u.total_withdrawn,
+                        u.created_at,
+                        COUNT(v.id) as total_votes,
+                        COUNT(DISTINCT v.season_id) as seasons_voted
+                    FROM users u
+                    LEFT JOIN votes v ON u.id = v.user_id
+                    WHERE u.is_active = TRUE
+                    GROUP BY u.id
+                    ORDER BY u.created_at DESC
+                """)
+                users_data = cursor.fetchall()
                 print(f"Foydalanuvchilar ma'lumotlari olindi: {len(users_data)} ta")
             except Exception as e:
                 print(f"Foydalanuvchilar ma'lumotlarini olishda xato: {e}")
@@ -1057,23 +1057,23 @@ class DatabasePostgreSQL:
             # 2. Ovoz berish tarixi
             print("Ovoz berish tarixi olinmoqda...")
             try:
-            cursor.execute("""
-                SELECT 
-                    v.id,
-                    v.user_id,
-                    u.telegram_id,
-                    u.first_name,
-                    u.last_name,
-                    p.name as project_name,
-                    s.name as season_name,
-                    v.created_at as vote_date
-                FROM votes v
-                JOIN users u ON v.user_id = u.id
-                JOIN projects p ON v.project_id = p.id
-                JOIN seasons s ON v.season_id = s.id
-                ORDER BY v.created_at DESC
-            """)
-            votes_data = cursor.fetchall()
+                cursor.execute("""
+                    SELECT 
+                        v.id,
+                        v.user_id,
+                        u.telegram_id,
+                        u.first_name,
+                        u.last_name,
+                        p.name as project_name,
+                        s.name as season_name,
+                        v.created_at as vote_date
+                    FROM votes v
+                    JOIN users u ON v.user_id = u.id
+                    JOIN projects p ON v.project_id = p.id
+                    JOIN seasons s ON v.season_id = s.id
+                    ORDER BY v.created_at DESC
+                """)
+                votes_data = cursor.fetchall()
                 print(f"Ovoz berish tarixi olindi: {len(votes_data)} ta")
             except Exception as e:
                 print(f"Ovoz berish tarixini olishda xato: {e}")
@@ -1082,27 +1082,27 @@ class DatabasePostgreSQL:
             # 3. Pul chiqarish so'rovlari
             print("Pul chiqarish so'rovlari olinmoqda...")
             try:
-            cursor.execute("""
-                SELECT 
-                    wr.id,
-                    wr.user_id,
-                    u.telegram_id,
-                    u.first_name,
-                    u.last_name,
-                    u.phone,
-                    wr.amount,
-                    wr.commission,
-                    wr.net_amount,
-                    wr.method,
-                    wr.account_details,
-                    wr.status,
-                    wr.created_at,
-                    wr.processed_at
-                FROM withdrawal_requests wr
-                JOIN users u ON wr.user_id = u.id
-                ORDER BY wr.created_at DESC
-            """)
-            withdrawals_data = cursor.fetchall()
+                cursor.execute("""
+                    SELECT 
+                        wr.id,
+                        wr.user_id,
+                        u.telegram_id,
+                        u.first_name,
+                        u.last_name,
+                        u.phone,
+                        wr.amount,
+                        wr.commission,
+                        wr.net_amount,
+                        wr.method,
+                        wr.account_details,
+                        wr.status,
+                        wr.created_at,
+                        wr.processed_at
+                    FROM withdrawal_requests wr
+                    JOIN users u ON wr.user_id = u.id
+                    ORDER BY wr.created_at DESC
+                """)
+                withdrawals_data = cursor.fetchall()
                 print(f"Pul chiqarish so'rovlari olindi: {len(withdrawals_data)} ta")
             except Exception as e:
                 print(f"Pul chiqarish so'rovlarini olishda xato: {e}")
@@ -1111,7 +1111,7 @@ class DatabasePostgreSQL:
             # 4. Balans tarixi
             print("Balans tarixi olinmoqda...")
             try:
-            cursor.execute("""
+                cursor.execute("""
                 SELECT 
                     bh.id,
                     bh.user_id,
