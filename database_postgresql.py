@@ -70,12 +70,12 @@ class DatabasePostgreSQL:
         retry_delay = 1  # sekund
         
         for attempt in range(max_retries):
-        try:
+            try:
                 print(f"Ulanish urinishi {attempt + 1}/{max_retries}...")
                 print(f"Connection params: host={self.connection_params.get('host', 'N/A')}, port={self.connection_params.get('port', 'N/A')}, database={self.connection_params.get('database', 'N/A')}")
                 
-            conn = psycopg2.connect(**self.connection_params)
-            conn.autocommit = False
+                conn = psycopg2.connect(**self.connection_params)
+                conn.autocommit = False
                 print("PostgreSQL ulanish muvaffaqiyatli!")
                 
                 # Connection ni test qilish
@@ -85,7 +85,7 @@ class DatabasePostgreSQL:
                 cursor.close()
                 print("PostgreSQL connection test muvaffaqiyatli!")
                 
-            return conn
+                return conn
             except psycopg2.OperationalError as e:
                 print(f"PostgreSQL ulanishda xato (urinish {attempt + 1}): {e}")
                 if attempt < max_retries - 1:
@@ -101,12 +101,12 @@ class DatabasePostgreSQL:
                 print(f"PostgreSQL xatosi: {e}")
                 print(f"Xato kodi: {e.pgcode if hasattr(e, 'pgcode') else 'N/A'}")
                 raise
-        except Exception as e:
+            except Exception as e:
                 print(f"Kutilmagan xato: {e}")
                 print(f"Xato turi: {type(e).__name__}")
                 import traceback
                 print(f"Xato izi: {traceback.format_exc()}")
-            raise
+                raise
         
         return None
     
@@ -114,9 +114,9 @@ class DatabasePostgreSQL:
         """Ma'lumotlar bazasi va jadvallarni yaratish"""
         conn = None
         try:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
             print("Ma'lumotlar bazasi jadvallari yaratilmoqda...")
             
             # Foydalanuvchilar jadvali
@@ -310,12 +310,12 @@ class DatabasePostgreSQL:
             
         except Exception as e:
             if conn:
-            conn.rollback()
+                conn.rollback()
             print(f"PostgreSQL jadvallarini yaratishda xato: {e}")
             raise
         finally:
             if conn:
-            conn.close()
+                conn.close()
     
     def create_user(self, telegram_id, username, first_name, last_name, phone, region, language, referred_by=None):
         """Yangi foydalanuvchi yaratish"""
