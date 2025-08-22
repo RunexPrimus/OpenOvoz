@@ -70,12 +70,12 @@ class DatabasePostgreSQL:
         retry_delay = 1  # sekund
         
         for attempt in range(max_retries):
-            try:
+        try:
                 print(f"Ulanish urinishi {attempt + 1}/{max_retries}...")
                 print(f"Connection params: host={self.connection_params.get('host', 'N/A')}, port={self.connection_params.get('port', 'N/A')}, database={self.connection_params.get('database', 'N/A')}")
                 
-                conn = psycopg2.connect(**self.connection_params)
-                conn.autocommit = False
+            conn = psycopg2.connect(**self.connection_params)
+            conn.autocommit = False
                 print("PostgreSQL ulanish muvaffaqiyatli!")
                 
                 # Connection ni test qilish
@@ -85,7 +85,7 @@ class DatabasePostgreSQL:
                 cursor.close()
                 print("PostgreSQL connection test muvaffaqiyatli!")
                 
-                return conn
+            return conn
             except psycopg2.OperationalError as e:
                 print(f"PostgreSQL ulanishda xato (urinish {attempt + 1}): {e}")
                 if attempt < max_retries - 1:
@@ -101,18 +101,22 @@ class DatabasePostgreSQL:
                 print(f"PostgreSQL xatosi: {e}")
                 print(f"Xato kodi: {e.pgcode if hasattr(e, 'pgcode') else 'N/A'}")
                 raise
-            except Exception as e:
+        except Exception as e:
                 print(f"Kutilmagan xato: {e}")
                 print(f"Xato turi: {type(e).__name__}")
-                raise
+                import traceback
+                print(f"Xato izi: {traceback.format_exc()}")
+            raise
+        
+        return None
     
     def init_database(self):
         """Ma'lumotlar bazasi va jadvallarni yaratish"""
         conn = None
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
             print("Ma'lumotlar bazasi jadvallari yaratilmoqda...")
             
             # Foydalanuvchilar jadvali
@@ -306,12 +310,12 @@ class DatabasePostgreSQL:
             
         except Exception as e:
             if conn:
-                conn.rollback()
+            conn.rollback()
             print(f"PostgreSQL jadvallarini yaratishda xato: {e}")
             raise
         finally:
             if conn:
-                conn.close()
+            conn.close()
     
     def create_user(self, telegram_id, username, first_name, last_name, phone, region, language, referred_by=None):
         """Yangi foydalanuvchi yaratish"""
@@ -463,7 +467,7 @@ class DatabasePostgreSQL:
         finally:
             cursor.close()
             conn.close()
-
+    
     def get_approved_projects(self):
         """Tasdiqlangan loyihalarni olish"""
         conn = self.get_connection()
@@ -546,7 +550,7 @@ class DatabasePostgreSQL:
             return False
         finally:
             conn.close()
-
+    
     def get_setting(self, key, default=None):
         """Sozlama qiymatini olish"""
         conn = self.get_connection()
@@ -585,7 +589,7 @@ class DatabasePostgreSQL:
                 return True
             else:
                 print(f"Sozlama yangilanmadi: {key}")
-                return False
+            return False
                 
         except Exception as e:
             conn.rollback()
@@ -751,7 +755,7 @@ class DatabasePostgreSQL:
             
         except Exception as e:
             if conn:
-                conn.rollback()
+            conn.rollback()
             print(f"Tasdiqlangan loyiha yaratishda xato: {e}")
             print(f"Xato turi: {type(e).__name__}")
             import traceback
@@ -759,7 +763,7 @@ class DatabasePostgreSQL:
             return None
         finally:
             if conn:
-                conn.close()
+            conn.close()
     
     def create_withdrawal_request(self, withdrawal_data):
         """Pul chiqarish so'rovini yaratish"""
@@ -1014,37 +1018,37 @@ class DatabasePostgreSQL:
         conn = None
         try:
             print("To'liq hisobot ma'lumotlari yig'ilmoqda...")
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
             # 1. Foydalanuvchilar va ularning ovozlari
             print("Foydalanuvchilar ma'lumotlari olinmoqda...")
             try:
-                cursor.execute("""
-                    SELECT 
-                        u.id,
-                        u.telegram_id,
-                        u.username,
-                        u.first_name,
-                        u.last_name,
-                        u.phone,
-                        u.region,
-                        u.language,
-                        u.referral_code,
-                        u.balance,
-                        u.pending_balance,
-                        u.total_earned,
-                        u.total_withdrawn,
-                        u.created_at,
-                        COUNT(v.id) as total_votes,
-                        COUNT(DISTINCT v.season_id) as seasons_voted
-                    FROM users u
-                    LEFT JOIN votes v ON u.id = v.user_id
-                    WHERE u.is_active = TRUE
-                    GROUP BY u.id
-                    ORDER BY u.created_at DESC
-                """)
-                users_data = cursor.fetchall()
+            cursor.execute("""
+                SELECT 
+                    u.id,
+                    u.telegram_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    u.phone,
+                    u.region,
+                    u.language,
+                    u.referral_code,
+                    u.balance,
+                    u.pending_balance,
+                    u.total_earned,
+                    u.total_withdrawn,
+                    u.created_at,
+                    COUNT(v.id) as total_votes,
+                    COUNT(DISTINCT v.season_id) as seasons_voted
+                FROM users u
+                LEFT JOIN votes v ON u.id = v.user_id
+                WHERE u.is_active = TRUE
+                GROUP BY u.id
+                ORDER BY u.created_at DESC
+            """)
+            users_data = cursor.fetchall()
                 print(f"Foydalanuvchilar ma'lumotlari olindi: {len(users_data)} ta")
             except Exception as e:
                 print(f"Foydalanuvchilar ma'lumotlarini olishda xato: {e}")
@@ -1053,23 +1057,23 @@ class DatabasePostgreSQL:
             # 2. Ovoz berish tarixi
             print("Ovoz berish tarixi olinmoqda...")
             try:
-                cursor.execute("""
-                    SELECT 
-                        v.id,
-                        v.user_id,
-                        u.telegram_id,
-                        u.first_name,
-                        u.last_name,
-                        p.name as project_name,
-                        s.name as season_name,
-                        v.created_at as vote_date
-                    FROM votes v
-                    JOIN users u ON v.user_id = u.id
-                    JOIN projects p ON v.project_id = p.id
-                    JOIN seasons s ON v.season_id = s.id
-                    ORDER BY v.created_at DESC
-                """)
-                votes_data = cursor.fetchall()
+            cursor.execute("""
+                SELECT 
+                    v.id,
+                    v.user_id,
+                    u.telegram_id,
+                    u.first_name,
+                    u.last_name,
+                    p.name as project_name,
+                    s.name as season_name,
+                    v.created_at as vote_date
+                FROM votes v
+                JOIN users u ON v.user_id = u.id
+                JOIN projects p ON v.project_id = p.id
+                JOIN seasons s ON v.season_id = s.id
+                ORDER BY v.created_at DESC
+            """)
+            votes_data = cursor.fetchall()
                 print(f"Ovoz berish tarixi olindi: {len(votes_data)} ta")
             except Exception as e:
                 print(f"Ovoz berish tarixini olishda xato: {e}")
@@ -1078,27 +1082,27 @@ class DatabasePostgreSQL:
             # 3. Pul chiqarish so'rovlari
             print("Pul chiqarish so'rovlari olinmoqda...")
             try:
-                cursor.execute("""
-                    SELECT 
-                        wr.id,
-                        wr.user_id,
-                        u.telegram_id,
-                        u.first_name,
-                        u.last_name,
-                        u.phone,
-                        wr.amount,
-                        wr.commission,
-                        wr.net_amount,
-                        wr.method,
-                        wr.account_details,
-                        wr.status,
-                        wr.created_at,
-                        wr.processed_at
-                    FROM withdrawal_requests wr
-                    JOIN users u ON wr.user_id = u.id
-                    ORDER BY wr.created_at DESC
-                """)
-                withdrawals_data = cursor.fetchall()
+            cursor.execute("""
+                SELECT 
+                    wr.id,
+                    wr.user_id,
+                    u.telegram_id,
+                    u.first_name,
+                    u.last_name,
+                    u.phone,
+                    wr.amount,
+                    wr.commission,
+                    wr.net_amount,
+                    wr.method,
+                    wr.account_details,
+                    wr.status,
+                    wr.created_at,
+                    wr.processed_at
+                FROM withdrawal_requests wr
+                JOIN users u ON wr.user_id = u.id
+                ORDER BY wr.created_at DESC
+            """)
+            withdrawals_data = cursor.fetchall()
                 print(f"Pul chiqarish so'rovlari olindi: {len(withdrawals_data)} ta")
             except Exception as e:
                 print(f"Pul chiqarish so'rovlarini olishda xato: {e}")
@@ -1107,23 +1111,23 @@ class DatabasePostgreSQL:
             # 4. Balans tarixi
             print("Balans tarixi olinmoqda...")
             try:
-                cursor.execute("""
-                    SELECT 
-                        bh.id,
-                        bh.user_id,
-                        u.telegram_id,
-                        u.first_name,
-                        u.last_name,
-                        bh.amount,
-                        bh.type,
-                        bh.description,
-                        bh.status,
-                        bh.created_at
-                    FROM balance_history bh
-                    JOIN users u ON bh.user_id = u.id
-                    ORDER BY bh.created_at DESC
-                """)
-                balance_history_data = cursor.fetchall()
+            cursor.execute("""
+                SELECT 
+                    bh.id,
+                    bh.user_id,
+                    u.telegram_id,
+                    u.first_name,
+                    u.last_name,
+                    bh.amount,
+                    bh.type,
+                    bh.description,
+                    bh.status,
+                    bh.created_at
+                FROM balance_history bh
+                JOIN users u ON bh.user_id = u.id
+                ORDER BY bh.created_at DESC
+            """)
+            balance_history_data = cursor.fetchall()
                 print(f"Balans tarixi olindi: {len(balance_history_data)} ta")
             except Exception as e:
                 print(f"Balans tarixini olishda xato: {e}")
@@ -1132,23 +1136,23 @@ class DatabasePostgreSQL:
             # 5. Loyihalar
             print("Loyihalar ma'lumotlari olinmoqda...")
             try:
-                cursor.execute("""
-                    SELECT 
-                        p.id,
-                        p.name,
-                        p.budget,
-                        p.region,
-                        p.status,
-                        s.name as season_name,
-                        COUNT(v.id) as total_votes,
-                        p.created_at
-                    FROM projects p
-                    LEFT JOIN seasons s ON p.season_id = s.id
-                    LEFT JOIN votes v ON p.id = v.project_id
+            cursor.execute("""
+                SELECT 
+                    p.id,
+                    p.name,
+                    p.budget,
+                    p.region,
+                    p.status,
+                    s.name as season_name,
+                    COUNT(v.id) as total_votes,
+                    p.created_at
+                FROM projects p
+                LEFT JOIN seasons s ON p.season_id = s.id
+                LEFT JOIN votes v ON p.id = v.project_id
                     GROUP BY p.id, p.name, p.budget, p.region, p.status, s.name, p.created_at
-                    ORDER BY p.created_at DESC
-                """)
-                projects_data = cursor.fetchall()
+                ORDER BY p.created_at DESC
+            """)
+            projects_data = cursor.fetchall()
                 print(f"Loyihalar ma'lumotlari olindi: {len(projects_data)} ta")
             except Exception as e:
                 print(f"Loyihalar ma'lumotlarini olishda xato: {e}")
@@ -1157,20 +1161,20 @@ class DatabasePostgreSQL:
             # 6. Tasdiqlangan loyihalar
             print("Tasdiqlangan loyihalar olinmoqda...")
             try:
-                cursor.execute("""
-                    SELECT 
-                        ap.id,
-                        ap.name,
-                        ap.link,
-                        ap.status,
-                        u.first_name as approved_by_name,
-                        ap.approved_at,
-                        ap.created_at
-                    FROM approved_projects ap
-                    JOIN users u ON ap.approved_by = u.id
-                    ORDER BY ap.created_at DESC
-                """)
-                approved_projects_data = cursor.fetchall()
+            cursor.execute("""
+                SELECT 
+                    ap.id,
+                    ap.name,
+                    ap.link,
+                    ap.status,
+                    u.first_name as approved_by_name,
+                    ap.approved_at,
+                    ap.created_at
+                FROM approved_projects ap
+                JOIN users u ON ap.approved_by = u.id
+                ORDER BY ap.created_at DESC
+            """)
+            approved_projects_data = cursor.fetchall()
                 print(f"Tasdiqlangan loyihalar olindi: {len(approved_projects_data)} ta")
             except Exception as e:
                 print(f"Tasdiqlangan loyihalarni olishda xato: {e}")
