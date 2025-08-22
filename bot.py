@@ -15,6 +15,34 @@ import asyncio
 import telegram
 import os
 
+def escape_markdown(text):
+    """Markdown belgilarini escape qilish"""
+    if not text:
+        return text
+    
+    # Markdown belgilarini escape qilish
+    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    
+    return text
+
+def safe_markdown_text(text):
+    """Xavfsiz Markdown matn yaratish"""
+    if not text:
+        return text
+    
+    try:
+        # Markdown formatini tekshirish
+        import re
+        # Markdown belgilarini to'g'ri formatda ekanligini tekshirish
+        if re.search(r'\*[^*]+\*', text) or re.search(r'_[^_]+_', text) or re.search(r'`[^`]+`', text):
+            return text  # To'g'ri formatda
+        else:
+            return escape_markdown(text)  # Escape qilish kerak
+    except:
+        return escape_markdown(text)  # Xatolik bo'lsa escape qilish
+
 # Logging sozlamalari
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1021,11 +1049,22 @@ class BotopneBot:
             if context.user_data.get('text_truncated'):
                 preview_text += "\n⚠️ *Eslatma:* Matn juda uzun bo'lgani uchun qisqartirildi"
         
-        await update.message.reply_text(
-            preview_text,
-            parse_mode='Markdown',
-            reply_markup=get_broadcast_preview_keyboard()
-        )
+        # Markdown xatolarini oldini olish uchun parse_mode ni o'chirib qo'yish
+        try:
+            await update.message.reply_text(
+                preview_text,
+                parse_mode='Markdown',
+                reply_markup=get_broadcast_preview_keyboard()
+            )
+        except telegram.error.BadRequest as e:
+            if "Can't parse entities" in str(e):
+                # Markdown xatosi bo'lsa, parse_mode siz yuborish
+                await update.message.reply_text(
+                    preview_text,
+                    reply_markup=get_broadcast_preview_keyboard()
+                )
+            else:
+                raise e
         
         return ConversationHandler.END
 
@@ -1059,36 +1098,83 @@ class BotopneBot:
         for user_data in all_users:
             try:
                 if context.user_data['broadcast_type'] == 'text':
-                    await context.bot.send_message(
-                        chat_id=user_data['telegram_id'],
-                        text=context.user_data['broadcast_content'],
-                        parse_mode='Markdown'
-                    )
-                    sent_count += 1
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_data['telegram_id'],
+                            text=context.user_data['broadcast_content'],
+                            parse_mode='Markdown'
+                        )
+                        sent_count += 1
+                    except telegram.error.BadRequest as e:
+                        if "Can't parse entities" in str(e):
+                            # Markdown xatosi bo'lsa, parse_mode siz yuborish
+                            await context.bot.send_message(
+                                chat_id=user_data['telegram_id'],
+                                text=context.user_data['broadcast_content']
+                            )
+                            sent_count += 1
+                        else:
+                            raise e
                 elif context.user_data['broadcast_type'] == 'photo':
-                    await context.bot.send_photo(
-                        chat_id=user_data['telegram_id'],
-                        photo=context.user_data['broadcast_content'].file_id,
-                        caption=context.user_data['broadcast_caption'],
-                        parse_mode='Markdown'
-                    )
-                    sent_count += 1
+                    try:
+                        await context.bot.send_photo(
+                            chat_id=user_data['telegram_id'],
+                            photo=context.user_data['broadcast_content'].file_id,
+                            caption=context.user_data['broadcast_caption'],
+                            parse_mode='Markdown'
+                        )
+                        sent_count += 1
+                    except telegram.error.BadRequest as e:
+                        if "Can't parse entities" in str(e):
+                            # Markdown xatosi bo'lsa, parse_mode siz yuborish
+                            await context.bot.send_photo(
+                                chat_id=user_data['telegram_id'],
+                                photo=context.user_data['broadcast_content'].file_id,
+                                caption=context.user_data['broadcast_caption']
+                            )
+                            sent_count += 1
+                        else:
+                            raise e
                 elif context.user_data['broadcast_type'] == 'video':
-                    await context.bot.send_video(
-                        chat_id=user_data['telegram_id'],
-                        video=context.user_data['broadcast_content'].file_id,
-                        caption=context.user_data['broadcast_caption'],
-                        parse_mode='Markdown'
-                    )
-                    sent_count += 1
+                    try:
+                        await context.bot.send_video(
+                            chat_id=user_data['telegram_id'],
+                            video=context.user_data['broadcast_content'].file_id,
+                            caption=context.user_data['broadcast_caption'],
+                            parse_mode='Markdown'
+                        )
+                        sent_count += 1
+                    except telegram.error.BadRequest as e:
+                        if "Can't parse entities" in str(e):
+                            # Markdown xatosi bo'lsa, parse_mode siz yuborish
+                            await context.bot.send_video(
+                                chat_id=user_data['telegram_id'],
+                                video=context.user_data['broadcast_content'].file_id,
+                                caption=context.user_data['broadcast_caption']
+                            )
+                            sent_count += 1
+                        else:
+                            raise e
                 elif context.user_data['broadcast_type'] == 'document':
-                    await context.bot.send_document(
-                        chat_id=user_data['telegram_id'],
-                        document=context.user_data['broadcast_content'].file_id,
-                        caption=context.user_data['broadcast_caption'],
-                        parse_mode='Markdown'
-                    )
-                    sent_count += 1
+                    try:
+                        await context.bot.send_document(
+                            chat_id=user_data['telegram_id'],
+                            document=context.user_data['broadcast_content'].file_id,
+                            caption=context.user_data['broadcast_caption'],
+                            parse_mode='Markdown'
+                        )
+                        sent_count += 1
+                    except telegram.error.BadRequest as e:
+                        if "Can't parse entities" in str(e):
+                            # Markdown xatosi bo'lsa, parse_mode siz yuborish
+                            await context.bot.send_document(
+                                chat_id=user_data['telegram_id'],
+                                document=context.user_data['broadcast_content'].file_id,
+                                caption=context.user_data['broadcast_caption']
+                            )
+                            sent_count += 1
+                        else:
+                            raise e
                 elif context.user_data['broadcast_type'] == 'forwarded':
                     try:
                         # Forward qilingan xabarni yuborish
@@ -1103,23 +1189,56 @@ class BotopneBot:
                             # Agar caption juda uzun bo'lsa, uni qisqartirib yuborish
                             message = context.user_data['broadcast_message']
                             if message.photo:
-                                await context.bot.send_photo(
-                                    chat_id=user_data['telegram_id'],
-                                    photo=message.photo[-1].file_id,
-                                    caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None
-                                )
+                                try:
+                                    await context.bot.send_photo(
+                                        chat_id=user_data['telegram_id'],
+                                        photo=message.photo[-1].file_id,
+                                        caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None,
+                                        parse_mode='Markdown'
+                                    )
+                                except telegram.error.BadRequest as e:
+                                    if "Can't parse entities" in str(e):
+                                        await context.bot.send_photo(
+                                            chat_id=user_data['telegram_id'],
+                                            photo=message.photo[-1].file_id,
+                                            caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None
+                                        )
+                                    else:
+                                        raise e
                             elif message.video:
-                                await context.bot.send_video(
-                                    chat_id=user_data['telegram_id'],
-                                    video=message.video.file_id,
-                                    caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None
-                                )
+                                try:
+                                    await context.bot.send_video(
+                                        chat_id=user_data['telegram_id'],
+                                        video=message.video.file_id,
+                                        caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None,
+                                        parse_mode='Markdown'
+                                    )
+                                except telegram.error.BadRequest as e:
+                                    if "Can't parse entities" in str(e):
+                                        await context.bot.send_video(
+                                            chat_id=user_data['telegram_id'],
+                                            video=message.video.file_id,
+                                            caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None
+                                        )
+                                    else:
+                                        raise e
                             elif message.document:
-                                await context.bot.send_document(
-                                    chat_id=user_data['telegram_id'],
-                                    document=message.document.file_id,
-                                    caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None
-                                )
+                                try:
+                                    await context.bot.send_document(
+                                        chat_id=user_data['telegram_id'],
+                                        document=message.document.file_id,
+                                        caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None,
+                                        parse_mode='Markdown'
+                                    )
+                                except telegram.error.BadRequest as e:
+                                    if "Can't parse entities" in str(e):
+                                        await context.bot.send_document(
+                                            chat_id=user_data['telegram_id'],
+                                            document=message.document.file_id,
+                                            caption=context.user_data.get('broadcast_caption', '')[:1024] if context.user_data.get('broadcast_caption') else None
+                                        )
+                                    else:
+                                        raise e
                             elif message.text:
                                 # Matn juda uzun bo'lsa, uni qismlarga bo'lib yuborish
                                 text = context.user_data.get('original_text', message.text)
