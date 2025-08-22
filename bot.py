@@ -483,6 +483,9 @@ class BotopneBot:
         db_user = self.db.get_user(user.id)
         language = db_user['language']
         
+        # Ovoz berish bonusini olish
+        vote_bonus = int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS))
+        
         # Loyihalarni olish (mavsum bo'yicha)
         projects = []
         active_season = self.db.get_active_season()
@@ -516,7 +519,7 @@ class BotopneBot:
                 message += f"🏗 {project['name']}\n"
                 message += f"🔗 {project['link']}\n\n"
         
-        message += "🗳 *Ovoz berish uchun quyidagi tugmalardan birini bosing:*"
+        message += f"🗳 *Ovoz berish uchun quyidagi tugmalardan birini bosing:*\n💰 *Har ovoz uchun bonus: {vote_bonus:,} so'm*"
         
         # Ovoz berish tugmalari bilan klaviatura yaratish
         keyboard = []
@@ -530,7 +533,7 @@ class BotopneBot:
                         callback_data=f"vote_project_{project['id']}"
                     ),
                     InlineKeyboardButton(
-                        f"Ovoz berish❗️",
+                        f"Ovoz berish❗️ ({vote_bonus:,} so'm)",
                         url=project.get('link', '#')  # Agar link bo'lsa ochadi
                     )
                 ])
@@ -544,7 +547,7 @@ class BotopneBot:
                         callback_data=f"vote_project_{project['id']}"
                     ),
                     InlineKeyboardButton(
-                        f"Ovoz berish❗️",
+                        f"Ovoz berish❗️ ({vote_bonus:,} so'm)",
                         url=project['link'] if project['link'] and project['link'].startswith(('http://', 'https://')) else '#'
                     )
                 ])
@@ -1702,9 +1705,13 @@ class BotopneBot:
         context.user_data['voted_project_name'] = project['name']
         context.user_data['voted_project_link'] = project['link']
         
+        # Ovoz berish bonusini olish
+        vote_bonus = int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS))
+        
         await query.edit_message_text(
             f"🏗 *{project['name']}* loyihasi uchun ovoz berdingiz!\n\n"
             f"🔗 *Loyiha havolasi:* {project['link']}\n\n"
+            f"💰 *Ovoz uchun bonus:* {vote_bonus:,} so'm\n\n"
             f"📸 *Ovoz berganingizni tasdiqlovchi screenshot yuboring!*\n\n"
             f"📱 Screenshot da quyidagilar ko'rinishi kerak:\n"
             f"• Kelgan SMS xabari\n"
@@ -2010,7 +2017,7 @@ class BotopneBot:
         
         if data.startswith('vote_yes_'):
             project_id = int(data.split('_')[2])
-            await self.process_vote(update, context, project_id, True)
+            await self.confirm_vote(update, context, project_id)
         elif data.startswith('vote_no_'):
             await query.edit_message_text(
                 get_message('operation_cancelled', 'uz'),
@@ -2026,6 +2033,52 @@ class BotopneBot:
         
         if not confirmed:
             return
+        
+        # Ovoz berish logikasi
+        active_season = self.db.get_active_season()
+        if not active_season:
+            await query.edit_message_text(
+                get_message('no_active_season', language),
+                reply_markup=get_back_keyboard()
+            )
+            return
+        
+        # Ovoz cheklovlarini tekshirish
+        votes_count = self.db.get_user_votes_count(db_user['id'], active_season['id'])
+        if votes_count >= MAX_VOTES_PER_SEASON:
+            await query.edit_message_text(
+                get_message('vote_limit_reached', language, max_votes=MAX_VOTES_PER_SEASON),
+                reply_markup=get_back_keyboard()
+            )
+            return
+        
+        # Ovoz narxini olish
+        vote_price = int(self.db.get_setting('VOTE_BONUS', VOTE_BONUS))
+        
+        # Ovoz berishni tasdiqlash xabarini yuborish
+        project = self.db.get_project_by_id(project_id)
+        if project:
+            confirmation_text = get_message('vote_confirmation', language, 
+                                         project_name=project['name'], 
+                                         vote_price=vote_price)
+            
+            await query.edit_message_text(
+                confirmation_text,
+                parse_mode='Markdown',
+                reply_markup=get_vote_confirmation_keyboard(project_id)
+            )
+        else:
+            await query.edit_message_text(
+                get_message('project_not_found', language),
+                reply_markup=get_back_keyboard()
+            )
+    
+    async def confirm_vote(self, update: Update, context: ContextTypes.DEFAULT_TYPE, project_id: int):
+        """Ovoz berishni tasdiqlash"""
+        query = update.callback_query
+        user = update.effective_user
+        db_user = self.db.get_user(user.id)
+        language = db_user['language']
         
         # Ovoz berish logikasi
         active_season = self.db.get_active_season()

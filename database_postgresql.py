@@ -498,6 +498,54 @@ class DatabasePostgreSQL:
         finally:
             cursor.close()
             conn.close()
+    
+    def get_user_votes_count(self, user_id, season_id):
+        """Foydalanuvchining ma'lum mavsumdagi ovozlar sonini olish"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) FROM votes 
+                WHERE user_id = %s AND season_id = %s
+            """, (user_id, season_id))
+            
+            count = cursor.fetchone()[0]
+            return count
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def add_vote(self, user_id, project_id, season_id):
+        """Ovoz qo'shish"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Ovoz allaqachon mavjudligini tekshirish
+            cursor.execute("""
+                SELECT id FROM votes 
+                WHERE user_id = %s AND project_id = %s AND season_id = %s
+            """, (user_id, project_id, season_id))
+            
+            if cursor.fetchone():
+                return False  # Ovoz allaqachon mavjud
+            
+            # Yangi ovoz qo'shish
+            cursor.execute("""
+                INSERT INTO votes (user_id, project_id, season_id, created_at)
+                VALUES (%s, %s, %s, %s)
+            """, (user_id, project_id, season_id, datetime.now()))
+            
+            conn.commit()
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Ovoz qo'shishda xato: {e}")
+            return False
+        finally:
+            conn.close()
 
     def get_setting(self, key, default=None):
         """Sozlama qiymatini olish"""

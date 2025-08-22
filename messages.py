@@ -17,7 +17,7 @@ MESSAGES = {
         'no_active_season': '📅 Hozirda faol mavsum yo\'q. Yangi mavsum boshlanguncha kuting.',
         'select_project': '🏗 Qaysi loyihaga ovoz bermoqchisiz?',
         'project_info': '📋 *{name}*\n\n{t description}\n\n💰 Budjet: {budget:,} so\'m\n🏘 Hudud: {region}\n📅 Kategoriya: {category}',
-        'vote_confirmation': '🗳 Loyihaga ovoz berishni tasdiqlaysizmi?\n\n{project_name}',
+        'vote_confirmation': '🗳 Loyihaga ovoz berishni tasdiqlaysizmi?\n\n{project_name}\n\n💰 Ovoz narxi: {vote_price:,} so\'m',
         'vote_success': '✅ Ovoz muvaffaqiyatli qo\'shildi!\n\n💰 +{bonus} so\'m bonus qo\'shildi',
         'vote_already': '⚠️ Siz bu loyihaga allaqachon ovoz bergansiz!',
         'vote_limit_reached': '⚠️ Siz bu mavsumda maksimal ovoz soniga yetgansiz ({max_votes} ta)',
