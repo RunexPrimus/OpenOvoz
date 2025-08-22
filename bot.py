@@ -74,7 +74,7 @@ class BotopneBot:
                     MessageHandler(filters.Regex('^👥 Do\'stlarga ulash$|^👥 Пригласить друзей$'), self.referral_menu),
                     MessageHandler(filters.Regex('^📖 Qo\'llanma$|^📖 Инструкция$'), self.help_menu),
                     MessageHandler(filters.Regex('^ℹ️ Profil$|^ℹ️ Профиль$'), self.profile_menu),
-                    MessageHandler(filters.Regex('^📢 Yangiliklar$|^📢 Новости$'), self.news_menu),
+                    MessageHandler(filters.Regex('^✅ Isbotlar guruhi$|^✅ Группа доказательств$'), self.proofs_group_menu),
                     MessageHandler(filters.Regex('^🔙 Orqaga$|^🔙 Назад$'), self.back_to_main),
                     MessageHandler(filters.Regex('^💸 Pul chiqarish$|^💸 Вывод средств$'), self.withdrawal_menu),
                     MessageHandler(filters.Regex('^📊 Tarix$|^📊 История$'), self.balance_history),
@@ -740,6 +740,18 @@ class BotopneBot:
             await update.message.reply_text(
                 get_message('news_empty', language)
             )
+    
+    async def proofs_group_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Isbotlar guruhi menyusi"""
+        user = update.effective_user
+        db_user = self.db.get_user(user.id)
+        language = db_user['language']
+        
+        # Isbotlar guruhiga qo'shilish haqida ma'lumot
+        await update.message.reply_text(
+            get_message('proofs_group_info', language),
+            parse_mode='Markdown'
+        )
     
     async def balance_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Balans tarixi"""

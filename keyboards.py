@@ -8,14 +8,14 @@ def get_main_keyboard(language='uz'):
             ['🗳 Ovoz berish'],
             ['💰 Balans', '👥 Do\'stlarga ulash'],
             ['📖 Qo\'llanma', 'ℹ️ Profil'],
-            ['📢 Yangiliklar']
+            ['✅ Isbotlar guruhi']
         ]
     else:  # ru
         keyboard = [
             ['🗳 Голосовать'],
             ['💰 Баланс', '👥 Пригласить друзей'],
             ['📖 Инструкция', 'ℹ️ Профиль'],
-            ['📢 Новости']
+            ['✅ Группа доказательств']
         ]
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -114,7 +114,7 @@ def get_admin_main_keyboard(language='uz'):
             ['🗳 Ovoz berish'],
             ['💰 Balans', '👥 Do\'stlarga ulash'],
             ['📖 Qo\'llanma', 'ℹ️ Profil'],
-            ['📢 Yangiliklar', '🛠 Admin panel'],
+            ['✅ Isbotlar guruhi', '🛠 Admin panel'],
             ['📋 Hisobot yuklab olish']
         ]
     else:  # ru
@@ -122,7 +122,7 @@ def get_admin_main_keyboard(language='uz'):
             ['🗳 Голосовать'],
             ['💰 Баланс', '👥 Пригласить друзей'],
             ['📖 Инструкция', 'ℹ️ Профиль'],
-            ['📢 Новости', '🛠 Панель администратора'],
+            ['✅ Группа доказательств', '🛠 Панель администратора'],
             ['📋 Скачать отчет']
         ]
     
