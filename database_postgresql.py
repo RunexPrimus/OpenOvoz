@@ -1112,22 +1112,22 @@ class DatabasePostgreSQL:
             print("Balans tarixi olinmoqda...")
             try:
                 cursor.execute("""
-                SELECT 
-                    bh.id,
-                    bh.user_id,
-                    u.telegram_id,
-                    u.first_name,
-                    u.last_name,
-                    bh.amount,
-                    bh.type,
-                    bh.description,
-                    bh.status,
-                    bh.created_at
-                FROM balance_history bh
-                JOIN users u ON bh.user_id = u.id
-                ORDER BY bh.created_at DESC
-            """)
-            balance_history_data = cursor.fetchall()
+                    SELECT 
+                        bh.id,
+                        bh.user_id,
+                        u.telegram_id,
+                        u.first_name,
+                        u.last_name,
+                        bh.amount,
+                        bh.type,
+                        bh.description,
+                        bh.status,
+                        bh.created_at
+                    FROM balance_history bh
+                    JOIN users u ON bh.user_id = u.id
+                    ORDER BY bh.created_at DESC
+                """)
+                balance_history_data = cursor.fetchall()
                 print(f"Balans tarixi olindi: {len(balance_history_data)} ta")
             except Exception as e:
                 print(f"Balans tarixini olishda xato: {e}")
@@ -1136,23 +1136,23 @@ class DatabasePostgreSQL:
             # 5. Loyihalar
             print("Loyihalar ma'lumotlari olinmoqda...")
             try:
-            cursor.execute("""
-                SELECT 
-                    p.id,
-                    p.name,
-                    p.budget,
-                    p.region,
-                    p.status,
-                    s.name as season_name,
-                    COUNT(v.id) as total_votes,
-                    p.created_at
-                FROM projects p
-                LEFT JOIN seasons s ON p.season_id = s.id
-                LEFT JOIN votes v ON p.id = v.project_id
+                cursor.execute("""
+                    SELECT 
+                        p.id,
+                        p.name,
+                        p.budget,
+                        p.region,
+                        p.status,
+                        s.name as season_name,
+                        COUNT(v.id) as total_votes,
+                        p.created_at
+                    FROM projects p
+                    LEFT JOIN seasons s ON p.season_id = s.id
+                    LEFT JOIN votes v ON p.id = v.project_id
                     GROUP BY p.id, p.name, p.budget, p.region, p.status, s.name, p.created_at
-                ORDER BY p.created_at DESC
-            """)
-            projects_data = cursor.fetchall()
+                    ORDER BY p.created_at DESC
+                """)
+                projects_data = cursor.fetchall()
                 print(f"Loyihalar ma'lumotlari olindi: {len(projects_data)} ta")
             except Exception as e:
                 print(f"Loyihalar ma'lumotlarini olishda xato: {e}")
@@ -1161,20 +1161,20 @@ class DatabasePostgreSQL:
             # 6. Tasdiqlangan loyihalar
             print("Tasdiqlangan loyihalar olinmoqda...")
             try:
-            cursor.execute("""
-                SELECT 
-                    ap.id,
-                    ap.name,
-                    ap.link,
-                    ap.status,
-                    u.first_name as approved_by_name,
-                    ap.approved_at,
-                    ap.created_at
-                FROM approved_projects ap
-                JOIN users u ON ap.approved_by = u.id
-                ORDER BY ap.created_at DESC
-            """)
-            approved_projects_data = cursor.fetchall()
+                cursor.execute("""
+                    SELECT 
+                        ap.id,
+                        ap.name,
+                        ap.link,
+                        ap.status,
+                        u.first_name as approved_by_name,
+                        ap.approved_at,
+                        ap.created_at
+                    FROM approved_projects ap
+                    JOIN users u ON ap.approved_by = u.id
+                    ORDER BY ap.created_at DESC
+                """)
+                approved_projects_data = cursor.fetchall()
                 print(f"Tasdiqlangan loyihalar olindi: {len(approved_projects_data)} ta")
             except Exception as e:
                 print(f"Tasdiqlangan loyihalarni olishda xato: {e}")
