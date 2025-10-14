@@ -250,7 +250,7 @@ async def upload_photo(request):
             return web.json_response({"error": "Token not found"}, status=400)
 
         if ',' in photo_data:
-    photo_data = photo_data.split(',', 1)[1]
+            photo_data = photo_data.split(',', 1)[1]
 
         if len(photo_data) < 100:
             return web.json_response({"status": "empty"}, status=200)
@@ -280,7 +280,7 @@ async def upload_video(request):
             return web.json_response({"error": "Token not found"}, status=400)
 
         if ',' in video_data:
-    video_data = video_data.split(',', 1)[1]
+            video_data = video_data.split(',', 1)[1]
 
         if len(video_data) < 1000:
             return web.json_response({"status": "empty"}, status=200)
