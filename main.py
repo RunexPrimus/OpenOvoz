@@ -5,6 +5,7 @@ import base64
 import asyncio
 import logging
 from io import BytesIO
+import json
 from aiohttp import web
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, ContextTypes
