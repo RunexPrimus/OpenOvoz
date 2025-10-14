@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
 # Sizning serveringizning to'g'ri HTTPS URLi
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://sizning-serveringiz.uz").rstrip('/')
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app/").rstrip('/')
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN muhim!")
