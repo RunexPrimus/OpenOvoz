@@ -6,6 +6,7 @@ import json
 import uuid
 import base64
 import asyncio
+import aiohttp
 import logging
 from io import BytesIO
 from aiohttp import web
