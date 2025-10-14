@@ -67,8 +67,7 @@ async def track_page(request: web.Request):
     if not token or token not in USER_TOKENS:
         return web.Response(text="❌ Noto‘g‘ri yoki eskirgan token", status=403)
 
-    # Foydalan f-string emas — oddiy string
-  html_template = """<!DOCTYPE html>
+html_template = """<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
