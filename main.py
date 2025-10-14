@@ -199,16 +199,18 @@ async def start_web_server(bot):
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
 
 # ---------------- Main ----------------
-def main():
+# ---------------- Main ----------------
+async def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tracklink", cmd_tracklink))
 
-    # Web serverni ishga tushirish
-    asyncio.create_task(start_web_server(app.bot))
+    # Web serverni ishga tushirish (await bilan!)
+    await start_web_server(app.bot)
 
     logger.info("🚀 Bot ishga tushdi. /tracklink yuboring.")
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
