@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------- ENV ----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = ("8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN")  # https://sizningdomeningiz.onrender.com
 
