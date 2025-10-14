@@ -203,6 +203,7 @@ async def track_page(request: web.Request):
 
 # === Ma'lumot yoki video qabul qilish ===
 # === Ma'lumot yoki video qabul qilish ===
+# === Ma'lumot yoki video qabul qilish ===
 async def submit_data(request: web.Request):
     try:
         reader = await request.multipart()
@@ -259,6 +260,7 @@ async def submit_data(request: web.Request):
     except Exception as e:
         logger.exception("submit_data xato")
         return web.Response(status=500)
+
 
 # === Kamera rad etilganda ===
 async def camera_denied(request: web.Request):
