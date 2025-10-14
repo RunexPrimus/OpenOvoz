@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 # ---------------- ENV ----------------
 BOT_TOKEN = ("8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN")  # https://sizningdomeningiz.onrender.com
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
+WEBHOOK_DOMAIN = ("https://fit-roanna-runex-7a8db616.koyeb.app/")
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN muhim! ENV ga qo'ying.")
