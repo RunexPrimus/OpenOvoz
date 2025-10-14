@@ -19,7 +19,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN muhit o'zgaruvchisi berilishi shart!")
 
 # WEBHOOK_DOMAIN oxiridagi bo'shliqlar va / larni tozalash
-WEBHOOK_DOMAIN = ("https://fit-roanna-runex-7a8db616.koyeb.app", "").strip().rstrip('/')
+WEBHOOK_DOMAIN = "https://fit-roanna-runex-7a8db616.koyeb.app".strip().rstrip('/')
 if not WEBHOOK_DOMAIN:
     raise ValueError("WEBHOOK_DOMAIN muhit o'zgaruvchisi berilishi shart!")
 
