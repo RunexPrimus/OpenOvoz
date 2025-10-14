@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --------- ENV ---------
-WEBHOOK_URL = os.getenv("MAIN_BOT_WEBHOOK_URL", "https://your-main-bot.com/webhook/device-data")
+WEBHOOK_URL = os.getenv("MAIN_BOT_WEBHOOK_URL", "fit-roanna-runex-7a8db616.koyeb.app/webhook/device-data")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 PORT = int(os.getenv("PORT", "8000"))
 
