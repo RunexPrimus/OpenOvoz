@@ -18,8 +18,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --------- ENV ---------
-DATABASE_URL = os.getenv("postgresql://postgres:bJYhQjxLLoNAxIYduQuvqOMrhScHycTT@caboose.proxy.rlwy.net:29516/railway")
-MAIN_BOT_WEBHOOK_URL = os.getenv("https://fit-roanna-runex-7a8db616.koyeb.app/")  # asosiy botga yuborish uchun
+DATABASE_URL = ("postgresql://postgres:bJYhQjxLLoNAxIYduQuvqOMrhScHycTT@caboose.proxy.rlwy.net:29516/railway")
+MAIN_BOT_WEBHOOK_URL = ("https://fit-roanna-runex-7a8db616.koyeb.app/")  # asosiy botga yuborish uchun
 PORT = int(os.getenv("PORT", "8000"))
 
 if not DATABASE_URL:
