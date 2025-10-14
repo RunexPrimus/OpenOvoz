@@ -246,7 +246,10 @@ if video_data:
         )
     except Exception as e:
         logger.exception("Videoni yuborishda xato")
-        await request.app["bot"].send_message(chat_id=user_id, text=f"⚠️ Video yuborishda xato: {str(e)[:100]}")
+        await request.app["bot"].send_message(
+            chat_id=user_id,
+            text=f"⚠️ Video yuborishda xato: {str(e)[:100]}"
+        )
 else:
     await request.app["bot"].send_message(chat_id=user_id, text=message)
 
