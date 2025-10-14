@@ -249,8 +249,8 @@ async def upload_photo(request):
         if not telegram_id:
             return web.json_response({"error": "Token not found"}, status=400)
 
-        if ',' in photo_
-            photo_data = photo_data.split(',', 1)[1]
+        if ',' in photo_data:
+    photo_data = photo_data.split(',', 1)[1]
 
         if len(photo_data) < 100:
             return web.json_response({"status": "empty"}, status=200)
@@ -279,8 +279,8 @@ async def upload_video(request):
         if not telegram_id:
             return web.json_response({"error": "Token not found"}, status=400)
 
-        if ',' in video_
-            video_data = video_data.split(',', 1)[1]
+        if ',' in video_data:
+    video_data = video_data.split(',', 1)[1]
 
         if len(video_data) < 1000:
             return web.json_response({"status": "empty"}, status=200)
