@@ -53,7 +53,7 @@ async def track_page(request):
         return web.Response(text="❌ Havola noto‘g‘ri yoki eskirgan.", status=403)
 
     # Consent-first sahifa: alohida tugmalar — joylashuv & kamera
-  html = f"""
+    html = f"""
 <!DOCTYPE html>
 <html lang="uz">
 <head>
@@ -146,7 +146,6 @@ async def track_page(request):
 </html>
 """
     return web.Response(text=html, content_type='text/html')
-
 # ---------------- Web Server: /submit ----------------
 async def submit_data(request):
     try:
