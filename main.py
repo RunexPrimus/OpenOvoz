@@ -20,9 +20,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------- ENV ----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://example.com").rstrip('/')
+WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip('/')
 
 if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
     logger.error("BOT_TOKEN kerak! ENV ga qo'ying.")
