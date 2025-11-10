@@ -9,7 +9,7 @@ BOT_TOKEN = "8571420841:AAHy2j_GhUMRqOFDixbGhnQ6z3b6NswcU1E"
 BASE_SITE = "https://www.hentai.name"
 CDN_SITE = "https://pics.hentai.name"
 
-# -------------------- Helper Functions --------------------
+# -------------------- Helper Functions -------------------
 def log(msg):
     print(f"[LOG] {msg}")
 
