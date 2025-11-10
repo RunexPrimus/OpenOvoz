@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CallbackQueryHandler, CommandHandler, ContextTypes
 
-BOT_TOKEN = "8571420841:AAHy2j_GhUMRqOFDixbGhnQ6z3b6NswcU1E"
+BOT_TOKEN = "8282416690:AAF2Uz6yfATHlrThT5YbGfxXyxi1vx3rUeA"
 BASE_SITE = "https://www.hentai.name"
 CDN_SITE = "https://pics.hentai.name"
 
