@@ -9,7 +9,7 @@ from telegram.ext import (
     CallbackQueryHandler, CommandHandler, ContextTypes
 )
 
-# ---------- CONFIG ----------
+# ---------- CONFIG ---------
 BOT_TOKEN = "8571420841:AAHy2j_GhUMRqOFDixbGhnQ6z3b6NswcU1E"
 BASE_SITE = "https://www.hentai.name"    # yoki https://www.manga.name — kerakiga qarab o'zgartiring
 CDN_SITE  = "https://pics.hentai.name"
