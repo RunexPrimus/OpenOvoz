@@ -1,5 +1,6 @@
 import re
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -15,16 +16,20 @@ def log(msg):
 def slugify(term):
     return re.sub(r"\s+", "-", term.strip())
 
+import cloudscraper
+
 def search_mangas(term, page=1):
     url = f"{BASE_SITE}/search/{slugify(term)}/?p={page}"
     log(f"Qidiruv URL: {url}")
-    headers = {"User-Agent": "Mozilla/5.0"}
+
+    scraper = cloudscraper.create_scraper()  # Cloudflare bypass
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = scraper.get(url, timeout=10)
         r.raise_for_status()
     except Exception as e:
         log(f"Qidiruv xatoligi: {e}")
         return [], None, None
+
     soup = BeautifulSoup(r.text, "html.parser")
     results = []
     for a in soup.select("a.cover"):
@@ -35,11 +40,11 @@ def search_mangas(term, page=1):
             "title": caption.text.strip() if caption else "Noma'lum",
             "poster": img["src"] if img else None
         })
+
     next_page = page + 1 if soup.select("a.next") else None
     prev_page = page - 1 if page > 1 else None
     log(f"{len(results)} manga topildi. Next page: {next_page}, Prev page: {prev_page}")
     return results, next_page, prev_page
-
 def manga_poster_url(manga_link):
     manga_id = int(manga_link.strip("/").split("/")[-1])
     first3 = str(manga_id).zfill(6)[:3]
