@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 
 # ---------- CONFIG ---------
-BOT_TOKEN = "8571420841:AAHy2j_GhUMRqOFDixbGhnQ6z3b6NswcU1E"
+BOT_TOKEN = "8527838419:AAGIMFOGAYM15BDA8Kk4LFxhrm-kKJC-L38"
 BASE_SITE = "https://www.hentai.name"    # yoki https://www.manga.name — kerakiga qarab o'zgartiring
 CDN_SITE  = "https://pics.hentai.name"
 
