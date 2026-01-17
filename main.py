@@ -1,322 +1,472 @@
-# bot_cloudscraper.py
-import re
+import os
 import asyncio
-import cloudscraper
-from bs4 import BeautifulSoup
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler, filters,
-    CallbackQueryHandler, CommandHandler, ContextTypes
-)
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 
-# ---------- CONFIG ---------
-BOT_TOKEN = "8527838419:AAGIMFOGAYM15BDA8Kk4LFxhrm-kKJC-L38"
-BASE_SITE = "https://www.hentai.name"    # yoki https://www.manga.name — kerakiga qarab o'zgartiring
-CDN_SITE  = "https://pics.hentai.name"
+import aiosqlite
 
-# OPTIONAL: agar siz brauzerdan olingan cookie'larni ishlatmoqchi bo'lsangiz shu yerga qo'ying.
-# Eslatma: cookie'lar vaqt o'tishi bilan yaroqsiz bo'lishi mumkin — yangilang.
-DEFAULT_COOKIES = {
-    "_pk_id.2.80ff": "87d72b757c3ed68d.1762794922.",
-    "_pk_ses.2.80ff": "1",
-    "fpestid": "1YfG3OViYhbVVBMnTEmU-tCxiSzFsA_kQwRqNkeTg5lAtAjaJHg_bYElnL932lO5wzouAw"
-}
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 
-# Kuchli headers (brauzerga o'xshash)
-DEFAULT_HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/142.0.0.0 Safari/537.36"),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8,uz;q=0.7",
-    "Referer": BASE_SITE + "/",
-    "Origin": BASE_SITE,
-    # sec-ch headers (Cloudflare-aware)
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Dest": "empty",
-    "Pragma": "no-cache",
-    "Cache-Control": "no-cache",
-}
+from telethon import TelegramClient, functions, types
+from telethon.sessions import StringSession
+from telethon.errors import RPCError
 
-# ---------- Logging helper ----------
-def log(msg: str):
-    print(f"[LOG] {msg}")
 
-# ---------- Utilities ----------
-def slugify(term: str) -> str:
-    return re.sub(r"\s+", "-", term.strip())
+# ===================== ENV (NO .env) =====================
+def env_required(name: str) -> str:
+    v = os.environ.get(name)
+    if not v:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return v
 
-def manga_poster_url(manga_link: str) -> str:
-    manga_id = int(manga_link.strip("/").split("/")[-1])
-    first3 = str(manga_id).zfill(6)[:3]
-    return f"{CDN_SITE}/000/{first3}/{manga_id}/poster_1.webp"
+BOT_TOKEN = env_required("BOT_TOKEN")
+TG_API_ID = int(env_required("TG_API_ID"))
+TG_API_HASH = env_required("TG_API_HASH")
+RELAYER_SESSION = env_required("RELAYER_SESSION")
 
-def manga_image_url(manga_link: str, index: int) -> str:
-    manga_id = int(manga_link.strip("/").split("/")[-1])
-    first3 = str(manga_id).zfill(6)[:3]
-    return f"{CDN_SITE}/000/{first3}/{manga_id}/{index+1}.webp"
+# Only this user can use the bot
+ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "7440949683"))
 
-# ---------- Network / Scraping (sync) ----------
-def _search_mangas_sync(term: str, page: int = 1,
-                        headers: dict = None, cookies: dict = None):
-    """
-    Blocking function that performs HTTP fetch + parsing.
-    Returns (results list, next_page_or_None, prev_page_or_None)
-    """
-    url = f"{BASE_SITE}/search/{slugify(term)}/?p={page}"
-    log(f"Qidiruv URL: {url}")
-    headers = headers or DEFAULT_HEADERS
-    cookies = cookies or DEFAULT_COOKIES
+DB_PATH = os.environ.get("DB_PATH", "bot.db")
 
-    # cloudscraper create – bypass Cloudflare JS challenges in many cases
-    scraper = cloudscraper.create_scraper()  # you can pass browser=... if needed
-    try:
-        r = scraper.get(url, headers=headers, cookies=cookies, timeout=15)
-        # raise_for_status to convert 403/5xx into exceptions we can catch
-        r.raise_for_status()
-    except Exception as e:
-        log(f"Qidiruv xatoligi: {e}")
-        return [], None, None
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    results = []
-    # find anchor elements that represent covers (page-specific; may need adjusting)
-    for a in soup.select("a.cover"):
-        img = a.find("img")
-        caption = a.find("div", class_="caption")
-        link = a.get("href")
-        # Normalize link: some sites return relative hrefs
-        if link and link.startswith("/"):
-            link = BASE_SITE.rstrip("/") + link
-        results.append({
-            "link": link,
-            "title": caption.text.strip() if caption else "Noma'lum",
-            "poster": img["src"] if img and img.get("src") else None
-        })
-    # detect pagination buttons (site-specific)
-    next_page = page + 1 if soup.select("a.next") else None
-    prev_page = page - 1 if page > 1 else None
-    log(f"{len(results)} manga topildi. Next page: {next_page}, Prev page: {prev_page}")
-    return results, next_page, prev_page
+def is_allowed(user_id: int) -> bool:
+    return int(user_id) == ALLOWED_USER_ID
 
-# Async wrapper so we don't block the event loop
-async def search_mangas(term: str, page: int = 1, headers: dict = None, cookies: dict = None):
-    return await asyncio.to_thread(_search_mangas_sync, term, page, headers, cookies)
 
-# ---------- Bot session store ----------
-# sessions: chat_id -> {'results':[], 'index':0, 'page':1, 'term':str, 'message_id':int}
-sessions = {}
+async def deny_message(obj: Union[Message, CallbackQuery]):
+    text = "⛔️ Access denied."
+    if isinstance(obj, Message):
+        await obj.answer(text)
+    else:
+        await obj.answer(text, show_alert=True)
 
-# ---------- Bot Handlers (async) ----------
-async def start(update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Salom! Manga qidirish uchun nom yozing (masalan: Naruto).\n"
-        "Qidiruvni yuborganingizdan so‘ng 5–10 ta natija chiqadi, tanlang."
+
+# ===================== STATIC GIFT CATALOG =====================
+@dataclass(frozen=True)
+class GiftItem:
+    id: int
+    stars: int
+    label: str
+
+GIFT_CATALOG: List[GiftItem] = [
+    GiftItem(6028601630662853006, 50, "🍾 50★"),
+    GiftItem(5170521118301225164, 100, "💎 100★"),
+    GiftItem(5170690322832818290, 100, "💍 100★"),
+    GiftItem(5168043875654172773, 100, "🏆 100★"),
+    GiftItem(5170564780938756245, 50, "🚀 50★"),
+    GiftItem(5170314324215857265, 50, "💐 50★"),
+    GiftItem(5170144170496491616, 50, "🎂 50★"),
+    GiftItem(5168103777563050263, 25, "🌹 25★"),
+    GiftItem(5170250947678437525, 25, "🎁 25★"),
+    GiftItem(5170233102089322756, 15, "🧸 15★"),
+    GiftItem(5170145012310081615, 15, "💝 15★"),
+    GiftItem(5922558454332916696, 50, "🎄 50★"),
+    GiftItem(5956217000635139069, 50, "🧸(hat) 50★"),
+]
+
+GIFTS_BY_PRICE: Dict[int, List[GiftItem]] = {}
+GIFTS_BY_ID: Dict[int, GiftItem] = {}
+
+for g in GIFT_CATALOG:
+    GIFTS_BY_PRICE.setdefault(g.stars, []).append(g)
+    GIFTS_BY_ID[g.id] = g
+
+ALLOWED_PRICES = sorted(GIFTS_BY_PRICE.keys())
+
+
+# ===================== DB =====================
+async def db_init():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            target TEXT DEFAULT 'me',
+            comment TEXT DEFAULT NULL,
+            selected_gift_id INTEGER DEFAULT NULL
+        )
+        """)
+        await db.commit()
+
+async def db_ensure_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO user_settings(user_id) VALUES(?)", (user_id,))
+        await db.commit()
+
+async def db_get_settings(user_id: int) -> Tuple[str, Optional[str], Optional[int]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT target, comment, selected_gift_id FROM user_settings WHERE user_id=?",
+            (user_id,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return ("me", None, None)
+        return (row[0] or "me", row[1], row[2])
+
+async def db_set_target(user_id: int, target: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_settings SET target=? WHERE user_id=?", (target, user_id))
+        await db.commit()
+
+async def db_set_comment(user_id: int, comment: Optional[str]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_settings SET comment=? WHERE user_id=?", (comment, user_id))
+        await db.commit()
+
+async def db_set_selected_gift(user_id: int, gift_id: Optional[int]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_settings SET selected_gift_id=? WHERE user_id=?", (gift_id, user_id))
+        await db.commit()
+
+
+# ===================== Relayer (Telethon) =====================
+class Relayer:
+    def __init__(self):
+        self.client = TelegramClient(
+            StringSession(RELAYER_SESSION),
+            TG_API_ID,
+            TG_API_HASH,
+            timeout=25,
+            connection_retries=5,
+            retry_delay=2,
+            auto_reconnect=True,
+        )
+        self._lock = asyncio.Lock()
+
+    async def start(self):
+        await self.client.connect()
+        if not await self.client.is_user_authorized():
+            raise RuntimeError("RELAYER_SESSION invalid. QR bilan qayta session oling.")
+        return await self.client.get_me()
+
+    async def stop(self):
+        await self.client.disconnect()
+
+    def _clean_comment(self, s: Optional[str]) -> str:
+        if not s:
+            return ""
+        s = s.strip().replace("\r", " ").replace("\n", " ")
+        if len(s) > 120:
+            s = s[:120]
+        return s
+
+    async def send_gift(
+        self,
+        target: Union[str, int],
+        gift: GiftItem,
+        comment: Optional[str] = None,
+        show_profile: bool = True,
+    ):
+        async with self._lock:
+            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
+            if isinstance(can, types.payments.CheckCanSendGiftResultFail):
+                reason = getattr(can.reason, "text", None) or str(can.reason)
+                raise RuntimeError(f"Can't send gift: {reason}")
+
+            try:
+                peer = await self.client.get_input_entity(target)
+            except Exception:
+                if isinstance(target, int):
+                    raise RuntimeError(
+                        "❌ user_id orqali entity topilmadi.\n"
+                        "✅ @username ishlating yoki qabul qiluvchi relayerga 1 marta yozsin."
+                    )
+                raise
+
+            txt = self._clean_comment(comment)
+            msg_obj = None if not txt else types.TextWithEntities(text=txt, entities=[])
+
+            # show_profile=True => hide_name OMIT => anonim emas
+            extra = {}
+            if not show_profile:
+                extra["hide_name"] = True
+
+            async def _try_send(msg):
+                invoice = types.InputInvoiceStarGift(
+                    peer=peer,
+                    gift_id=gift.id,
+                    message=msg,
+                    **extra
+                )
+                form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
+                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice)
+
+            try:
+                await _try_send(msg_obj)
+            except RPCError as e:
+                if "STARGIFT_MESSAGE_INVALID" in str(e):
+                    await _try_send(None)
+                else:
+                    raise
+
+
+# ===================== Bot UI =====================
+def main_menu_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎯 Qabul qiluvchi", callback_data="menu:target")
+    kb.button(text="💬 Komment", callback_data="menu:comment")
+    kb.button(text="🎁 Sovg'a tanlash", callback_data="menu:gift")
+    kb.button(text="🚀 Yuborish", callback_data="menu:send")
+    kb.adjust(2, 2)
+    return kb.as_markup()
+
+def back_menu_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Menu", callback_data="menu:home")
+    return kb.as_markup()
+
+def price_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for p in ALLOWED_PRICES:
+        kb.button(text=f"⭐ {p}", callback_data=f"price:{p}")
+    kb.button(text="⬅️ Menu", callback_data="menu:home")
+    kb.adjust(2, 2, 1)
+    return kb.as_markup()
+
+def gifts_by_price_kb(price: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for g in GIFTS_BY_PRICE.get(price, []):
+        kb.button(text=f"{g.label} » {g.id}", callback_data=f"gift:{g.id}")
+    kb.button(text="⬅️ Narxlar", callback_data="menu:gift")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def confirm_send_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Tasdiqlab yuborish", callback_data="send:go")
+    kb.button(text="🎯 Qabul qiluvchi", callback_data="menu:target")
+    kb.button(text="💬 Komment", callback_data="menu:comment")
+    kb.button(text="🎁 Sovg'a", callback_data="menu:gift")
+    kb.button(text="⬅️ Menu", callback_data="menu:home")
+    kb.adjust(1, 2, 2)
+    return kb.as_markup()
+
+
+class Form(StatesGroup):
+    waiting_target = State()
+    waiting_comment = State()
+
+
+def normalize_target(text: str) -> Union[str, int]:
+    t = (text or "").strip()
+    if not t:
+        return "me"
+    if t.lower() == "me":
+        return "me"
+    if t.startswith("@"):
+        return t
+    if t.isdigit():
+        return int(t)
+    return "@" + t
+
+
+def safe_comment(text: str) -> str:
+    t = (text or "").strip()
+    if len(t) > 250:
+        t = t[:250]
+    return t
+
+
+async def render_status(user_id: int) -> str:
+    target, comment, sel_gift_id = await db_get_settings(user_id)
+    gift_txt = "Tanlanmagan"
+    if sel_gift_id and sel_gift_id in GIFTS_BY_ID:
+        g = GIFTS_BY_ID[sel_gift_id]
+        gift_txt = f"{g.label} (⭐{g.stars}) — {g.id}"
+    comment_txt = comment if comment else "(yo‘q)"
+    return (
+        "📌 Hozirgi sozlamalar:\n"
+        f"🎯 Qabul qiluvchi: {target}\n"
+        f"💬 Komment: {comment_txt}\n"
+        f"🎁 Sovg‘a: {gift_txt}\n\n"
+        "Quyidan tanlang:"
     )
-    log(f"{update.effective_user.id} start berdi")
 
-async def text_handler(update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
-    term = update.message.text.strip()
-    chat_id = update.message.chat_id
-    log(f"{update.effective_user.id} qidirmoqda: {term}")
 
-    # call blocking search in thread
-    results, next_page, prev_page = await search_mangas(term, page=1)
-    if not results:
-        await update.message.reply_text("Hech narsa topilmadi 😔 (Cloudflare yoki sayt strukturasini tekshiring)")
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+relayer = Relayer()
+
+
+@dp.message(Command("start"))
+async def start(m: Message, state: FSMContext):
+    if not is_allowed(m.from_user.id):
+        return await deny_message(m)
+    await state.clear()
+    await db_ensure_user(m.from_user.id)
+    await m.answer(await render_status(m.from_user.id), reply_markup=main_menu_kb())
+
+@dp.message(Command("menu"))
+async def menu_cmd(m: Message, state: FSMContext):
+    if not is_allowed(m.from_user.id):
+        return await deny_message(m)
+    await state.clear()
+    await db_ensure_user(m.from_user.id)
+    await m.answer(await render_status(m.from_user.id), reply_markup=main_menu_kb())
+
+
+@dp.callback_query(F.data.startswith("menu:"))
+async def menu_router(c: CallbackQuery, state: FSMContext):
+    if not is_allowed(c.from_user.id):
+        return await deny_message(c)
+
+    await c.answer()
+    await db_ensure_user(c.from_user.id)
+
+    action = c.data.split(":", 1)[1]
+
+    if action == "home":
+        await state.clear()
+        await c.message.edit_text(await render_status(c.from_user.id), reply_markup=main_menu_kb())
         return
 
-    sessions[chat_id] = {'results': results, 'index': 0, 'page': 1, 'term': term, 'message_id': None}
-    await send_search_results(chat_id, context, results, next_page, prev_page)
-
-async def send_search_results(chat_id: int, context: ContextTypes.DEFAULT_TYPE,
-                              results: list, next_page=None, prev_page=None, edit=False):
-    # prepare keyboard (first 10)
-    keyboard = []
-    for r in results[:10]:
-        # callback_data include full link (safe because we never eval it) — if too long, use index mapping
-        keyboard.append([InlineKeyboardButton(r['title'] or "Noma'lum", callback_data=f"select|{r['link']}")])
-    nav_buttons = []
-    if prev_page:
-        nav_buttons.append(InlineKeyboardButton("Oldingi sahifa", callback_data=f"page|{sessions[chat_id]['term']}|{prev_page}"))
-    if next_page:
-        nav_buttons.append(InlineKeyboardButton("Keyingi sahifa", callback_data=f"page|{sessions[chat_id]['term']}|{next_page}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-
-    text = "Biror manga tanlang:"
-    log(f"Keyboard tayyorlandi, edit={edit}")
-    if edit and sessions[chat_id].get('message_id'):
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id,
-                                                message_id=sessions[chat_id]['message_id'],
-                                                text=text,
-                                                reply_markup=InlineKeyboardMarkup(keyboard))
-            log("Search results edited")
-        except Exception as e:
-            log(f"Edit search results failed: {e}")
-    else:
-        msg = await context.bot.send_message(chat_id=chat_id, text=text,
-                                             reply_markup=InlineKeyboardMarkup(keyboard))
-        sessions[chat_id]['message_id'] = msg.message_id
-        log(f"Yangi message yuborildi: {msg.message_id}")
-
-async def send_manga_prompt(chat_id: int, context: ContextTypes.DEFAULT_TYPE, edit=False):
-    session = sessions[chat_id]
-    index = session['index']
-    manga = session['results'][index]
-    poster = manga_poster_url(manga['link'])
-    caption = f"{manga['title']}\nO‘qishni boshlamoqchimisiz?"
-    keyboard = [
-        [
-            InlineKeyboardButton("Ha", callback_data=f"read|{manga['link']}|0"),
-            InlineKeyboardButton("Yo'q", callback_data="next_manga")
-        ]
-    ]
-    if edit and session.get('message_id'):
-        try:
-            await context.bot.edit_message_media(chat_id=chat_id,
-                                                 message_id=session['message_id'],
-                                                 media={'type': 'photo', 'media': poster},
-                                                 reply_markup=InlineKeyboardMarkup(keyboard))
-            await context.bot.edit_message_caption(chat_id=chat_id,
-                                                   message_id=session['message_id'],
-                                                   caption=caption,
-                                                   reply_markup=InlineKeyboardMarkup(keyboard))
-            log("Manga prompt edit qilindi")
-        except Exception as e:
-            log(f"Edit manga prompt failed: {e}")
-    else:
-        msg = await context.bot.send_photo(chat_id=chat_id, photo=poster,
-                                           caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
-        session['message_id'] = msg.message_id
-        log(f"Manga prompt yuborildi (message_id={msg.message_id})")
-
-async def button_handler(update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    chat_id = q.message.chat.id if q.message else q.from_user.id
-    session = sessions.get(chat_id)
-    if not session:
-        try:
-            await q.edit_message_text("Sessiya tugagan. Iltimos, yangi nom yozing.", reply_markup=None)
-        except Exception:
-            pass
-        log("Sessiya topilmadi")
+    if action == "target":
+        await state.set_state(Form.waiting_target)
+        await c.message.edit_text(
+            "🎯 Qabul qiluvchini yuboring:\n- `me`\n- `@username`\n- `user_id` (raqam)\n\n"
+            "⚠️ user_id ba'zan ishlamasligi mumkin. Username eng yaxshi.",
+            reply_markup=back_menu_kb()
+        )
         return
 
-    data = q.data.split("|")
-    log(f"Callback data: {q.data}")
+    if action == "comment":
+        await state.set_state(Form.waiting_comment)
+        await c.message.edit_text(
+            "💬 Komment yuboring (ixtiyoriy).\nO‘chirish uchun: `-` yuboring.\nMasalan: `:)`",
+            reply_markup=back_menu_kb()
+        )
+        return
 
-    if data[0] == "read":
-        manga_link = data[1]
-        index = int(data[2])
-        url = manga_image_url(manga_link, index)
-        keyboard = [
-            [
-                InlineKeyboardButton("Oldingi", callback_data=f"read|{manga_link}|{index-1}" if index > 0 else f"read|{manga_link}|0"),
-                InlineKeyboardButton("Keyingi", callback_data=f"read|{manga_link}|{index+1}")
-            ],
-            [InlineKeyboardButton("To‘xtatish", callback_data="stop_reading")]
-        ]
-        try:
-            await q.edit_message_media(media={'type': 'photo', 'media': url},
-                                       reply_markup=InlineKeyboardMarkup(keyboard))
-            log(f"Rasm yuborildi: {url}")
-        except Exception as e:
-            log(f"edit_message_media failed: {e}")
-            await q.edit_message_caption("Rasmni olishda xatolik yuz berdi.", reply_markup=None)
+    if action == "gift":
+        await state.clear()
+        await c.message.edit_text("🎁 Sovg‘a narxini tanlang:", reply_markup=price_kb())
+        return
 
-    elif data[0] == "stop_reading":
-        try:
-            await q.edit_message_caption("O‘qish to‘xtatildi", reply_markup=None)
-        except Exception:
-            pass
-        log("O‘qish to‘xtatildi")
+    if action == "send":
+        await state.clear()
+        await c.message.edit_text("🚀 Yuborishni tasdiqlang:", reply_markup=confirm_send_kb())
+        return
 
-    elif data[0] == "next_manga":
-        # agar lokal ro'yxatda yana manga bo'lsa -> ko'rsat
-        if session['index'] + 1 < len(session['results']):
-            session['index'] += 1
-            await send_manga_prompt(chat_id, context, edit=True)
-            log("Keyingi manga yuborildi (xuddi ro'yxat ichida)")
-            return
 
-        # aks holda sahifa oxiri -> keyingi sahifani yuklash
-        term = session['term']
-        next_page = session['page'] + 1
-        log(f"Sahifa oxiri — keyingi sahifa ({next_page}) yuklanmoqda...")
-        results, next_page_link, prev_page_link = await search_mangas(term, page=next_page)
-        if results:
-            session['results'] = results
-            session['index'] = 0
-            session['page'] = next_page
-            await send_manga_prompt(chat_id, context, edit=True)
-            log(f"Keyingi sahifa manga yuborildi, sahifa {next_page}")
-        else:
-            try:
-                await q.edit_message_caption("Ro'yxat tugadi.", reply_markup=None)
-            except Exception:
-                pass
-            log("Ro'yxat tugadi (hech yangi sahifa topilmadi)")
+@dp.message(Form.waiting_target)
+async def set_target(m: Message, state: FSMContext):
+    if not is_allowed(m.from_user.id):
+        return await deny_message(m)
 
-    elif data[0] == "select":
-        # user select qildi — topilgan ro'yxatdan linkni tanlab index'ga o'rnatamiz
-        manga_link = data[1]
-        # normalize link same as stored: ensure we compare consistent strings
-        # stored results may contain absolute URLs, ensure comparison matches
-        found_index = None
-        for i, r in enumerate(session['results']):
-            if r.get('link') == manga_link or r.get('link', '').endswith(manga_link):
-                found_index = i
-                break
-        if found_index is None:
-            # try to refresh current page results (rare)
-            log("Tanlangan manga topilmadi, sahifani qayta yuklaymiz...")
-            term = session['term']
-            page = session.get('page', 1)
-            results, next_page, prev_page = await search_mangas(term, page=page)
-            if not results:
-                await q.edit_message_text("Hech narsa topilmadi 😔", reply_markup=None)
-                return
-            session['results'] = results
-            # try find again
-            for i, r in enumerate(session['results']):
-                if r.get('link') == manga_link or r.get('link', '').endswith(manga_link):
-                    found_index = i
-                    break
-        if found_index is None:
-            # fallback: set to 0
-            found_index = 0
-        session['index'] = found_index
-        await send_manga_prompt(chat_id, context, edit=True)
-        log(f"Manga tanlandi va prompt yuborildi: index={found_index}")
+    await db_ensure_user(m.from_user.id)
+    target_norm = normalize_target(m.text.strip())
+    await db_set_target(m.from_user.id, str(target_norm))
+    await state.clear()
+    await m.answer("✅ Qabul qiluvchi saqlandi.\n\n" + await render_status(m.from_user.id), reply_markup=main_menu_kb())
 
-    elif data[0] == "page":
-        term, page = data[1], int(data[2])
-        results, next_page, prev_page = await search_mangas(term, page)
-        if results:
-            session['results'] = results
-            session['index'] = 0
-            session['page'] = page
-            await send_search_results(chat_id, context, results, next_page, prev_page, edit=True)
-            log(f"Sahifa o'zgartirildi: {page}")
-        else:
-            try:
-                await q.edit_message_text("Hech narsa topilmadi 😔", reply_markup=None)
-            except Exception:
-                pass
-            log(f"Sahifa {page} bo'sh")
 
-# ---------- Main ----------
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    log("Bot ishga tushmoqda...")
-    app.run_polling()
+@dp.message(Form.waiting_comment)
+async def set_comment(m: Message, state: FSMContext):
+    if not is_allowed(m.from_user.id):
+        return await deny_message(m)
+
+    await db_ensure_user(m.from_user.id)
+    raw = (m.text or "").strip()
+    if raw == "-" or raw.lower() == "off":
+        await db_set_comment(m.from_user.id, None)
+        await state.clear()
+        return await m.answer("✅ Komment o‘chirildi.\n\n" + await render_status(m.from_user.id), reply_markup=main_menu_kb())
+
+    comment = safe_comment(raw)
+    await db_set_comment(m.from_user.id, comment)
+    await state.clear()
+    await m.answer("✅ Komment saqlandi.\n\n" + await render_status(m.from_user.id), reply_markup=main_menu_kb())
+
+
+@dp.callback_query(F.data.startswith("price:"))
+async def choose_price(c: CallbackQuery):
+    if not is_allowed(c.from_user.id):
+        return await deny_message(c)
+
+    await c.answer()
+    price = int(c.data.split(":", 1)[1])
+    if price not in GIFTS_BY_PRICE:
+        return await c.message.edit_text("Bunday narx yo‘q.", reply_markup=price_kb())
+
+    await c.message.edit_text(f"⭐ {price} bo‘yicha sovg‘a tanlang:", reply_markup=gifts_by_price_kb(price))
+
+
+@dp.callback_query(F.data.startswith("gift:"))
+async def choose_gift(c: CallbackQuery):
+    if not is_allowed(c.from_user.id):
+        return await deny_message(c)
+
+    await c.answer()
+    gift_id = int(c.data.split(":", 1)[1])
+    if gift_id not in GIFTS_BY_ID:
+        return await c.message.edit_text("Gift topilmadi.", reply_markup=price_kb())
+
+    await db_set_selected_gift(c.from_user.id, gift_id)
+    g = GIFTS_BY_ID[gift_id]
+    await c.message.edit_text(
+        f"✅ Sovg‘a tanlandi:\n{g.label} (⭐{g.stars})\nID: {g.id}\n\nEndi yuborishni tasdiqlang:",
+        reply_markup=confirm_send_kb()
+    )
+
+
+@dp.callback_query(F.data == "send:go")
+async def send_go(c: CallbackQuery):
+    if not is_allowed(c.from_user.id):
+        return await deny_message(c)
+
+    await c.answer()
+    await db_ensure_user(c.from_user.id)
+
+    target_str, comment, sel_gift_id = await db_get_settings(c.from_user.id)
+    if not sel_gift_id or sel_gift_id not in GIFTS_BY_ID:
+        return await c.message.edit_text("❌ Avval sovg‘ani tanlang.", reply_markup=main_menu_kb())
+
+    gift = GIFTS_BY_ID[sel_gift_id]
+
+    t = (target_str or "me").strip()
+    if t.lower() == "me":
+        target: Union[str, int] = "me"
+    elif t.startswith("@"):
+        target = t
+    elif t.isdigit():
+        target = int(t)
+    else:
+        target = "@" + t
+
+    msg = (comment or "").strip()
+
+    await c.message.edit_text(
+        f"⏳ Yuborilyapti...\n🎯 Target: {target_str}\n🎁 Gift: {gift.label} (⭐{gift.stars})\n💬 Comment: {(msg if msg else '(bo‘sh)')}",
+        reply_markup=None
+    )
+
+    try:
+        await relayer.send_gift(target=target, gift=gift, comment=msg, show_profile=True)
+        await c.message.edit_text("✅ Yuborildi!\n\n" + await render_status(c.from_user.id), reply_markup=main_menu_kb())
+    except RPCError as e:
+        await c.message.edit_text(f"❌ Telegram RPCError: {e.__class__.__name__}: {e}\n\n" + await render_status(c.from_user.id),
+                                  reply_markup=main_menu_kb())
+    except Exception as e:
+        await c.message.edit_text(f"❌ Xatolik: {e}\n\n" + await render_status(c.from_user.id),
+                                  reply_markup=main_menu_kb())
+
+
+async def main():
+    await db_init()
+    me = await relayer.start()
+    print(f"[RELAYER] authorized as: id={me.id} username={me.username}")
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await relayer.stop()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
