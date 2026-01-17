@@ -196,7 +196,7 @@ class Relayer:
                     **extra
                 )
                 form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
-                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice)
+                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
 
             try:
                 await _try_send(msg_obj)
