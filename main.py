@@ -157,12 +157,13 @@ class Relayer:
             s = s[:120]
         return s
 
-    async def send_gift(
+        async def send_gift(
         self,
         target: Union[str, int],
         gift: GiftItem,
         comment: Optional[str] = None,
         show_profile: bool = True,
+        fallback_chat_message: bool = True,  # 👈 comment attach bo'lmasa chatga yuboradi
     ):
         async with self._lock:
             can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
@@ -181,14 +182,16 @@ class Relayer:
                 raise
 
             txt = self._clean_comment(comment)
-            msg_obj = None if not txt else types.TextWithEntities(text=txt, entities=[])
+            msg_obj = None
+            if txt:
+                msg_obj = types.TextWithEntities(text=txt, entities=[])
 
             # show_profile=True => hide_name OMIT => anonim emas
             extra = {}
             if not show_profile:
                 extra["hide_name"] = True
 
-            async def _try_send(msg):
+            async def _pay(msg):
                 invoice = types.InputInvoiceStarGift(
                     peer=peer,
                     gift_id=gift.id,
@@ -196,16 +199,37 @@ class Relayer:
                     **extra
                 )
                 form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
-                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
+                await self.client(
+                    functions.payments.SendStarsFormRequest(
+                        form_id=form.form_id,
+                        invoice=invoice
+                    )
+                )
 
-            try:
-                await _try_send(msg_obj)
-            except RPCError as e:
-                if "STARGIFT_MESSAGE_INVALID" in str(e):
-                    await _try_send(None)
-                else:
-                    raise
+            attached = False
 
+            # 1) comment bilan urinib ko'ramiz
+            if msg_obj is not None:
+                try:
+                    await _pay(msg_obj)
+                    attached = True
+                except RPCError as e:
+                    if "STARGIFT_MESSAGE_INVALID" in str(e):
+                        # 2) comment reject bo'lsa comment'siz yuboramiz
+                        await _pay(None)
+                    else:
+                        raise
+            else:
+                # comment yo'q
+                await _pay(None)
+
+            # 3) comment attach bo'lmagan bo'lsa ham yo'qolmasin -> chatga yuboramiz
+            if txt and (not attached) and fallback_chat_message:
+                # “gift bilan birga comment” o‘rniga ishonchli chat message
+                # (target me bo'lsa ham Saved Messagesga tushadi)
+                await self.client.send_message(peer, f"💬 Gift izohi: {txt}")
+
+            return attached
 
 # ===================== Bot UI =====================
 def main_menu_kb() -> InlineKeyboardMarkup:
