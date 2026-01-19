@@ -273,116 +273,65 @@ class DB:
 
 
 # ----------------- TON Center watcher (LIVE) -----------------
+log = logging.getLogger("toncenter")
+
 class TonCenter:
     def __init__(self, api_key: str, base_url: str, deposit_address: str):
         self.api_key = api_key
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
         self.deposit_address = deposit_address
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session: aiohttp.ClientSession | None = None
 
     async def start(self):
-        timeout = aiohttp.ClientTimeout(total=15)
-        self.session = aiohttp.ClientSession(timeout=timeout)
+        # FAIL-FAST timeout: request osilib qolmasin
+        timeout = aiohttp.ClientTimeout(total=10, connect=5, sock_read=8)
+        connector = aiohttp.TCPConnector(ssl=True, limit=50)
+        self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
     async def stop(self):
         if self.session:
             await self.session.close()
 
-    def headers(self) -> dict:
+    def _auth_headers(self) -> dict:
         return {"X-API-Key": self.api_key}
 
-    async def get_transactions(self, limit: int) -> List[dict]:
+    async def _get(self, path: str, params: dict) -> dict:
         assert self.session
-        url = f"{self.base_url}/getTransactions"
-        params = {"address": self.deposit_address, "limit": str(limit)}
-        async with self.session.get(url, params=params, headers=self.headers()) as r:
-            data = await r.json()
-            return data.get("result") or []
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        # TON Center ko‘pincha api_key queryni ham qabul qiladi — dual auth eng ishonchli
+        params = dict(params)
+        params["api_key"] = self.api_key
 
-    @staticmethod
-    def parse(tx: dict) -> Tuple[int, str, int, int, str]:
-        """
-        returns (lt, tx_hash, utime, amount_nano, memo)
-        """
-        tid = tx.get("transaction_id") or {}
-        lt = int(tid.get("lt") or 0)
-        tx_hash = tid.get("hash") or ""
+        try:
+            async with self.session.get(url, params=params, headers=self._auth_headers()) as r:
+                txt = await r.text()
+                # JSON bo‘lmasa ham log ko‘ramiz
+                try:
+                    data = await r.json()
+                except Exception:
+                    raise RuntimeError(f"TONCenter non-JSON ответ: HTTP {r.status}: {txt[:300]}")
 
-        utime = int(tx.get("utime") or 0)
-        in_msg = tx.get("in_msg") or {}
-        amount_nano = int(in_msg.get("value") or 0)
-        memo = (in_msg.get("message") or "").strip()
+                if r.status != 200:
+                    raise RuntimeError(f"TONCenter HTTP {r.status}: {data}")
 
-        dst = in_msg.get("destination")
-        # best-effort filter: only incoming to our deposit address
-        if dst and dst != os.environ.get("TON_DEPOSIT_ADDRESS"):
-            memo = ""
+                # TON Center spec: ok + result/error
+                if not data.get("ok", False):
+                    raise RuntimeError(f"TONCenter ok=false: {data.get('error') or data}")
 
-        return lt, tx_hash, utime, amount_nano, memo
+                return data
 
-    async def scan_new(self, db: DB) -> int:
-        """
-        scans newest txs and marks PAID orders.
-        returns number of newly paid orders.
-        """
-        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
-        last_lt = await db.get_last_lt()
+        except asyncio.TimeoutError:
+            raise RuntimeError("TONCenter timeout (10s). Server javob bermadi.")
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"TONCenter network error: {type(e).__name__}: {e}")
 
-        # txs are newest-first typically; process ascending to update checkpoint cleanly
-        parsed = []
-        now = int(time.time())
-        for tx in txs:
-            lt, tx_hash, utime, amount_nano, memo = self.parse(tx)
-            if lt <= last_lt:
-                continue
-            if utime and (now - utime) < MIN_TX_AGE_SEC:
-                continue
-            if not memo.startswith("order_"):
-                continue
-            parsed.append((lt, tx_hash, amount_nano, memo))
+    async def validate_address(self) -> dict:
+        # address format tekshirish (unpackAddress) :contentReference[oaicite:3]{index=3}
+        return await self._get("unpackAddress", {"address": self.deposit_address})
 
-        parsed.sort(key=lambda x: x[0])  # asc by lt
-        paid_count = 0
-        max_lt = last_lt
-
-        for lt, tx_hash, amount_nano, memo in parsed:
-            max_lt = max(max_lt, lt)
-            order = await db.get_order(memo)
-            if not order or order["status"] != "PENDING":
-                continue
-            if amount_nano < int(order["expected_nano"]):
-                continue
-
-            await db.mark_paid(memo, tx_hash, lt)
-            paid_count += 1
-
-        if max_lt > last_lt:
-            await db.set_last_lt(max_lt)
-
-        return paid_count
-
-    async def scan_for_order(self, db: DB, order_id: str) -> bool:
-        """
-        LIVE check for a specific order (button press):
-        fetch fresh tx list and try to match order memo immediately.
-        """
-        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
-        now = int(time.time())
-        for tx in txs:
-            lt, tx_hash, utime, amount_nano, memo = self.parse(tx)
-            if memo != order_id:
-                continue
-            if utime and (now - utime) < MIN_TX_AGE_SEC:
-                continue
-            order = await db.get_order(order_id)
-            if not order or order["status"] != "PENDING":
-                return True  # already handled
-            if amount_nano < int(order["expected_nano"]):
-                return False
-            await db.mark_paid(order_id, tx_hash, lt)
-            return True
-        return False
-
+    async def get_transactions(self, limit: int = 25) -> list[dict]:
+        data = await self._get("getTransactions", {"address": self.deposit_address, "limit": str(limit)})
+        return data.get("result") or []
 
 # ----------------- Relayer (Telethon) -----------------
 class Relayer:
@@ -679,16 +628,19 @@ async def cb_pay_check(c: CallbackQuery):
     order_id = c.data.split(":")[-1]
     await c.answer("🔎 Live tekshiryapman...")
 
+    try:
+        # shu yer qotib qolmasin: xatoni ushlab userga ko‘rsatamiz
+        found = await ton.scan_for_order(db, order_id)
+    except Exception as e:
+        return await c.answer(f"❌ TONCenter xatolik: {e}", show_alert=True)
+
     order = await db.get_order(order_id)
     if not order:
         return await c.answer("Order topilmadi.", show_alert=True)
 
-    if order["status"] == "PENDING":
-        found = await ton.scan_for_order(db, order_id)
-        order = await db.get_order(order_id)  # refresh
-        if not found and order and order["status"] == "PENDING":
-            await c.answer("⏳ Hali payment topilmadi. 10-20s kutib yana bosing.", show_alert=True)
-
+    # status yangilanadi (safe_edit bilan)
+    text = f"🧾 Order: `{order_id}`\nStatus: **{order['status']}**"
+    await safe_edit(c.message, text, reply_markup=pay_kb(order_id, order["expected_nano"]))
     # show updated status
     order = await db.get_order(order_id)
     gift = GIFTS_BY_ID.get(order["gift_id"])
