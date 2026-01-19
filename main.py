@@ -358,41 +358,69 @@ class Relayer:
     async def stop(self):
         await self.client.disconnect()
 
-    @staticmethod
-    def _clean_comment(s: Optional[str]) -> str:
-        if not s:
-            return ""
-        return s.strip().replace("\r", " ").replace("\n", " ")[:120]
+       @staticmethod
+    def _parse_tx(tx: dict):
+        tid = tx.get("transaction_id") or {}
+        lt = int(tid.get("lt") or 0)
+        tx_hash = tid.get("hash") or ""
+        utime = int(tx.get("utime") or 0)
+        in_msg = tx.get("in_msg") or {}
+        amount_nano = int(in_msg.get("value") or 0)
+        memo = (in_msg.get("message") or "").strip()
+        return lt, tx_hash, utime, amount_nano, memo
 
-    async def send_gift(self, target: str, gift: GiftItem, comment: Optional[str]) -> None:
-        async with self._lock:
-            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
-            if isinstance(can, types.payments.CheckCanSendGiftResultFail):
-                reason = getattr(can.reason, "text", None) or str(can.reason)
-                raise RuntimeError(f"Can't send gift: {reason}")
+    async def scan_new(self, db) -> int:
+        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
+        last_lt = await db.get_last_lt()
+        now = int(time.time())
 
-            peer = await self.client.get_input_entity(target)
+        parsed = []
+        for tx in txs:
+            lt, tx_hash, utime, amount_nano, memo = self._parse_tx(tx)
+            if lt <= last_lt:
+                continue
+            if utime and (now - utime) < MIN_TX_AGE_SEC:
+                continue
+            if not memo.startswith("order_"):
+                continue
+            parsed.append((lt, tx_hash, amount_nano, memo))
 
-            txt = self._clean_comment(comment)
-            msg_obj = types.TextWithEntities(text=txt, entities=[]) if txt else None
+        parsed.sort(key=lambda x: x[0])
 
-            async def _pay(msg):
-                invoice = types.InputInvoiceStarGift(peer=peer, gift_id=gift.id, message=msg)
-                form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
-                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
+        paid_count = 0
+        max_lt = last_lt
+        for lt, tx_hash, amount_nano, memo in parsed:
+            max_lt = max(max_lt, lt)
+            order = await db.get_order(memo)
+            if not order or order["status"] != "PENDING":
+                continue
+            if amount_nano < int(order["expected_nano"]):
+                continue
+            await db.mark_paid(memo, tx_hash, lt)
+            paid_count += 1
 
-            try:
-                await _pay(msg_obj)
-            except RPCError as e:
-                # if comment rejected, resend without comment + fallback message
-                if "STARGIFT_MESSAGE_INVALID" in str(e):
-                    await _pay(None)
-                    if txt:
-                        await self.client.send_message(peer, f"💬 Izoh: {txt}")
-                else:
-                    raise
+        if max_lt > last_lt:
+            await db.set_last_lt(max_lt)
 
+        return paid_count
 
+    async def scan_for_order(self, db, order_id: str) -> bool:
+        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
+        now = int(time.time())
+        for tx in txs:
+            lt, tx_hash, utime, amount_nano, memo = self._parse_tx(tx)
+            if memo != order_id:
+                continue
+            if utime and (now - utime) < MIN_TX_AGE_SEC:
+                continue
+            order = await db.get_order(order_id)
+            if not order or order["status"] != "PENDING":
+                return True
+            if amount_nano < int(order["expected_nano"]):
+                return False
+            await db.mark_paid(order_id, tx_hash, lt)
+            return True
+        return False
 # ----------------- Bot UI -----------------
 class Form(StatesGroup):
     waiting_receiver = State()
