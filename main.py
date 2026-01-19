@@ -3,6 +3,7 @@ import time
 import asyncio
 import logging
 import secrets
+import base64
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_UP
 from typing import Dict, List, Optional, Tuple
@@ -25,15 +26,15 @@ from telethon.sessions import StringSession
 from telethon.errors import RPCError
 
 
-# ----------------- LOG -----------------
+# ---------------- LOG ----------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-log = logging.getLogger("gift-ton-bot")
+log = logging.getLogger("app")
 
 
-# ----------------- ENV -----------------
+# ---------------- ENV ----------------
 def env_required(name: str) -> str:
     v = os.environ.get(name)
     if not v:
@@ -59,7 +60,7 @@ DB_PATH = os.environ.get("DB_PATH", "bot.db")
 NANO = Decimal("1000000000")
 
 
-# ----------------- Utils -----------------
+# ---------------- Utils ----------------
 def ton_to_nano_int(ton_amount: Decimal) -> int:
     a = ton_amount.quantize(Decimal("0.000000001"), rounding=ROUND_UP)
     return int(a * NANO)
@@ -78,7 +79,7 @@ async def safe_edit(msg, text: str, reply_markup=None):
         raise
 
 
-# ----------------- Gifts -----------------
+# ---------------- Gifts ----------------
 @dataclass(frozen=True)
 class GiftItem:
     id: int
@@ -108,7 +109,7 @@ for g in GIFT_CATALOG:
 ALLOWED_PRICES = sorted(GIFTS_BY_PRICE.keys())
 
 
-# ----------------- DB -----------------
+# ---------------- DB ----------------
 class DB:
     def __init__(self, path: str):
         self.path = path
@@ -139,7 +140,7 @@ class DB:
         CREATE TABLE IF NOT EXISTS orders(
             order_id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
-            target TEXT NOT NULL,                -- resolved @username
+            target TEXT NOT NULL,                -- @username
             gift_id INTEGER NOT NULL,
             stars INTEGER NOT NULL,
             expected_nano INTEGER NOT NULL,
@@ -218,7 +219,7 @@ class DB:
         keys = ["order_id","user_id","target","gift_id","stars","expected_nano","status","tx_hash","tx_lt","created_at","paid_at","sent_at","fail_reason"]
         return dict(zip(keys, row))
 
-    async def recent_orders(self, user_id: int, limit: int = 5) -> List[Tuple[str, str, int, int]]:
+    async def recent_orders(self, user_id: int, limit: int = 7) -> List[Tuple[str, str, int, int]]:
         assert self.conn
         cur = await self.conn.execute(
             "SELECT order_id,status,stars,expected_nano FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
@@ -229,8 +230,12 @@ class DB:
     async def mark_paid(self, order_id: str, tx_hash: str, tx_lt: int):
         assert self.conn
         now = int(time.time())
-        # prevent reusing same tx for multiple orders
-        cur = await self.conn.execute("SELECT 1 FROM orders WHERE tx_hash=? AND status IN ('PAID','SENT')", (tx_hash,))
+
+        # tx reuse protect
+        cur = await self.conn.execute(
+            "SELECT 1 FROM orders WHERE tx_hash=? AND status IN ('PAID','SENT')",
+            (tx_hash,)
+        )
         if await cur.fetchone():
             return
 
@@ -257,7 +262,10 @@ class DB:
 
     async def mark_failed(self, order_id: str, reason: str):
         assert self.conn
-        await self.conn.execute("UPDATE orders SET status='FAILED', fail_reason=? WHERE order_id=?", (reason[:500], order_id))
+        await self.conn.execute(
+            "UPDATE orders SET status='FAILED', fail_reason=? WHERE order_id=?",
+            (reason[:500], order_id)
+        )
         await self.conn.commit()
 
     async def get_last_lt(self) -> int:
@@ -272,68 +280,132 @@ class DB:
         await self.conn.commit()
 
 
-# ----------------- TON Center watcher (LIVE) -----------------
-log = logging.getLogger("toncenter")
+# ---------------- TON Center ----------------
+def _maybe_decode_memo(m: str) -> str:
+    m = (m or "").strip()
+    if m.startswith("order_"):
+        return m
+    # Sometimes providers return base64-like payloads; try decode.
+    try:
+        if len(m) >= 8 and all(c.isalnum() or c in "+/=_-" for c in m):
+            raw = m.replace("-", "+").replace("_", "/")
+            padded = raw + "=" * (-len(raw) % 4)
+            dec = base64.b64decode(padded).decode("utf-8", errors="ignore").strip()
+            if dec.startswith("order_"):
+                return dec
+    except Exception:
+        pass
+    return ""
 
 class TonCenter:
     def __init__(self, api_key: str, base_url: str, deposit_address: str):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.deposit_address = deposit_address
-        self.session: aiohttp.ClientSession | None = None
+        self.session: Optional[aiohttp.ClientSession] = None
 
     async def start(self):
-        # FAIL-FAST timeout: request osilib qolmasin
         timeout = aiohttp.ClientTimeout(total=10, connect=5, sock_read=8)
-        connector = aiohttp.TCPConnector(ssl=True, limit=50)
+        connector = aiohttp.TCPConnector(ssl=True, limit=30)
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
     async def stop(self):
         if self.session:
             await self.session.close()
 
-    def _auth_headers(self) -> dict:
+    def _headers(self) -> dict:
         return {"X-API-Key": self.api_key}
 
     async def _get(self, path: str, params: dict) -> dict:
         assert self.session
         url = f"{self.base_url}/{path.lstrip('/')}"
-        # TON Center ko‘pincha api_key queryni ham qabul qiladi — dual auth eng ishonchli
         params = dict(params)
-        params["api_key"] = self.api_key
+        params["api_key"] = self.api_key  # dual auth (header + query) for stability
 
         try:
-            async with self.session.get(url, params=params, headers=self._auth_headers()) as r:
-                txt = await r.text()
-                # JSON bo‘lmasa ham log ko‘ramiz
-                try:
-                    data = await r.json()
-                except Exception:
-                    raise RuntimeError(f"TONCenter non-JSON ответ: HTTP {r.status}: {txt[:300]}")
-
+            async with self.session.get(url, params=params, headers=self._headers()) as r:
+                data = await r.json(content_type=None)
                 if r.status != 200:
                     raise RuntimeError(f"TONCenter HTTP {r.status}: {data}")
-
-                # TON Center spec: ok + result/error
                 if not data.get("ok", False):
                     raise RuntimeError(f"TONCenter ok=false: {data.get('error') or data}")
-
                 return data
-
         except asyncio.TimeoutError:
-            raise RuntimeError("TONCenter timeout (10s). Server javob bermadi.")
+            raise RuntimeError("TONCenter timeout (10s).")
         except aiohttp.ClientError as e:
             raise RuntimeError(f"TONCenter network error: {type(e).__name__}: {e}")
 
-    async def validate_address(self) -> dict:
-        # address format tekshirish (unpackAddress) :contentReference[oaicite:3]{index=3}
-        return await self._get("unpackAddress", {"address": self.deposit_address})
-
-    async def get_transactions(self, limit: int = 25) -> list[dict]:
+    async def get_transactions(self, limit: int) -> List[dict]:
         data = await self._get("getTransactions", {"address": self.deposit_address, "limit": str(limit)})
         return data.get("result") or []
 
-# ----------------- Relayer (Telethon) -----------------
+    @staticmethod
+    def _parse_tx(tx: dict):
+        tid = tx.get("transaction_id") or {}
+        lt = int(tid.get("lt") or 0)
+        tx_hash = tid.get("hash") or ""
+        utime = int(tx.get("utime") or 0)
+        in_msg = tx.get("in_msg") or {}
+        amount_nano = int(in_msg.get("value") or 0)
+        memo_raw = (in_msg.get("message") or "")
+        memo = _maybe_decode_memo(memo_raw)
+        return lt, tx_hash, utime, amount_nano, memo
+
+    async def scan_new(self, db: DB) -> int:
+        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
+        last_lt = await db.get_last_lt()
+        now = int(time.time())
+
+        parsed = []
+        for tx in txs:
+            lt, tx_hash, utime, amount_nano, memo = self._parse_tx(tx)
+            if lt <= last_lt:
+                continue
+            if utime and (now - utime) < MIN_TX_AGE_SEC:
+                continue
+            if not memo.startswith("order_"):
+                continue
+            parsed.append((lt, tx_hash, amount_nano, memo))
+
+        parsed.sort(key=lambda x: x[0])  # asc
+        paid_count = 0
+        max_lt = last_lt
+
+        for lt, tx_hash, amount_nano, memo in parsed:
+            max_lt = max(max_lt, lt)
+            order = await db.get_order(memo)
+            if not order or order["status"] != "PENDING":
+                continue
+            if amount_nano < int(order["expected_nano"]):
+                continue
+            await db.mark_paid(memo, tx_hash, lt)
+            paid_count += 1
+
+        if max_lt > last_lt:
+            await db.set_last_lt(max_lt)
+
+        return paid_count
+
+    async def scan_for_order(self, db: DB, order_id: str) -> bool:
+        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
+        now = int(time.time())
+        for tx in txs:
+            lt, tx_hash, utime, amount_nano, memo = self._parse_tx(tx)
+            if memo != order_id:
+                continue
+            if utime and (now - utime) < MIN_TX_AGE_SEC:
+                continue
+            order = await db.get_order(order_id)
+            if not order or order["status"] != "PENDING":
+                return True
+            if amount_nano < int(order["expected_nano"]):
+                return False
+            await db.mark_paid(order_id, tx_hash, lt)
+            return True
+        return False
+
+
+# ---------------- Relayer (Telethon) ----------------
 class Relayer:
     def __init__(self):
         self.client = TelegramClient(
@@ -358,70 +430,42 @@ class Relayer:
     async def stop(self):
         await self.client.disconnect()
 
-       @staticmethod
-    def _parse_tx(tx: dict):
-        tid = tx.get("transaction_id") or {}
-        lt = int(tid.get("lt") or 0)
-        tx_hash = tid.get("hash") or ""
-        utime = int(tx.get("utime") or 0)
-        in_msg = tx.get("in_msg") or {}
-        amount_nano = int(in_msg.get("value") or 0)
-        memo = (in_msg.get("message") or "").strip()
-        return lt, tx_hash, utime, amount_nano, memo
+    @staticmethod
+    def _clean_comment(s: Optional[str]) -> str:
+        if not s:
+            return ""
+        return s.strip().replace("\r", " ").replace("\n", " ")[:120]
 
-    async def scan_new(self, db) -> int:
-        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
-        last_lt = await db.get_last_lt()
-        now = int(time.time())
+    async def send_gift(self, target: str, gift: GiftItem, comment: Optional[str]) -> None:
+        async with self._lock:
+            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
+            if isinstance(can, types.payments.CheckCanSendGiftResultFail):
+                reason = getattr(can.reason, "text", None) or str(can.reason)
+                raise RuntimeError(f"Can't send gift: {reason}")
 
-        parsed = []
-        for tx in txs:
-            lt, tx_hash, utime, amount_nano, memo = self._parse_tx(tx)
-            if lt <= last_lt:
-                continue
-            if utime and (now - utime) < MIN_TX_AGE_SEC:
-                continue
-            if not memo.startswith("order_"):
-                continue
-            parsed.append((lt, tx_hash, amount_nano, memo))
+            peer = await self.client.get_input_entity(target)
 
-        parsed.sort(key=lambda x: x[0])
+            txt = self._clean_comment(comment)
+            msg_obj = types.TextWithEntities(text=txt, entities=[]) if txt else None
 
-        paid_count = 0
-        max_lt = last_lt
-        for lt, tx_hash, amount_nano, memo in parsed:
-            max_lt = max(max_lt, lt)
-            order = await db.get_order(memo)
-            if not order or order["status"] != "PENDING":
-                continue
-            if amount_nano < int(order["expected_nano"]):
-                continue
-            await db.mark_paid(memo, tx_hash, lt)
-            paid_count += 1
+            async def _pay(msg):
+                invoice = types.InputInvoiceStarGift(peer=peer, gift_id=gift.id, message=msg)
+                form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
+                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
 
-        if max_lt > last_lt:
-            await db.set_last_lt(max_lt)
+            try:
+                await _pay(msg_obj)
+            except RPCError as e:
+                # comment rejected -> resend without + send normal message
+                if "STARGIFT_MESSAGE_INVALID" in str(e):
+                    await _pay(None)
+                    if txt:
+                        await self.client.send_message(peer, f"💬 Izoh: {txt}")
+                else:
+                    raise
 
-        return paid_count
 
-    async def scan_for_order(self, db, order_id: str) -> bool:
-        txs = await self.get_transactions(limit=TX_FETCH_LIMIT)
-        now = int(time.time())
-        for tx in txs:
-            lt, tx_hash, utime, amount_nano, memo = self._parse_tx(tx)
-            if memo != order_id:
-                continue
-            if utime and (now - utime) < MIN_TX_AGE_SEC:
-                continue
-            order = await db.get_order(order_id)
-            if not order or order["status"] != "PENDING":
-                return True
-            if amount_nano < int(order["expected_nano"]):
-                return False
-            await db.mark_paid(order_id, tx_hash, lt)
-            return True
-        return False
-# ----------------- Bot UI -----------------
+# ---------------- Bot UI ----------------
 class Form(StatesGroup):
     waiting_receiver = State()
     waiting_comment = State()
@@ -459,11 +503,9 @@ def gifts_by_price_kb(price: int) -> InlineKeyboardMarkup:
 
 def pay_kb(order_id: str, amount_nano: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-
     memo = quote(order_id)
     ton_link = f"ton://transfer/{TON_DEPOSIT_ADDRESS}?amount={amount_nano}&text={memo}"
     tk_link = f"https://app.tonkeeper.com/transfer/{TON_DEPOSIT_ADDRESS}?amount={amount_nano}&text={memo}"
-
     kb.button(text="💳 TON (ton://) to'lash", url=ton_link)
     kb.button(text="💳 Tonkeeper (https) to'lash", url=tk_link)
     kb.button(text="✅ Live tekshirish", callback_data=f"pay:check:{order_id}")
@@ -483,21 +525,21 @@ def normalize_receiver(text: str) -> str:
 
 def safe_comment(text: str) -> Optional[str]:
     t = (text or "").strip()
+    if not t:
+        return None
     if t == "-" or t.lower() == "off":
         return None
-    return t[:250] if t else None
+    return t[:250]
 
 
-# ----------------- App instances -----------------
+# ---------------- Instances ----------------
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-
 db = DB(DB_PATH)
 ton = TonCenter(TONCENTER_API_KEY, TONCENTER_BASE, TON_DEPOSIT_ADDRESS)
 relayer = Relayer()
 
 
-# ----------------- Render -----------------
 async def render_status(user_id: int) -> str:
     receiver, comment, sel_gift_id = await db.get_settings(user_id)
     gift_txt = "Tanlanmagan"
@@ -513,7 +555,7 @@ async def render_status(user_id: int) -> str:
     )
 
 
-# ----------------- Handlers -----------------
+# ---------------- Handlers ----------------
 @dp.message(Command("start"))
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
@@ -547,7 +589,8 @@ async def cb_receiver(c: CallbackQuery, state: FSMContext):
         "🎯 Qabul qiluvchi yuboring:\n"
         "- `me` (o‘zingiz)\n"
         "- `@username` (boshqa odam)\n\n"
-        "⚠️ Eng ishonchli: @username.",
+        "⚠️ Ishonchli variant: @username.\n"
+        "ℹ️ user_id bilan telethon ko‘pincha entity topolmaydi.",
         reply_markup=back_menu_kb()
     )
 
@@ -628,7 +671,7 @@ async def cb_buy(c: CallbackQuery):
                 c.message,
                 "❌ Sizda @username yo‘q.\n\n"
                 "`me` ishlashi uchun Telegram Settings -> Username qo‘ying.\n"
-                "Yoki receiver sifatida boshqa @username kiriting.",
+                "Yoki qabul qiluvchi sifatida @username kiriting.",
                 reply_markup=main_menu_kb()
             )
         target = "@" + c.from_user.username
@@ -656,20 +699,19 @@ async def cb_pay_check(c: CallbackQuery):
     order_id = c.data.split(":")[-1]
     await c.answer("🔎 Live tekshiryapman...")
 
-    try:
-        # shu yer qotib qolmasin: xatoni ushlab userga ko‘rsatamiz
-        found = await ton.scan_for_order(db, order_id)
-    except Exception as e:
-        return await c.answer(f"❌ TONCenter xatolik: {e}", show_alert=True)
-
     order = await db.get_order(order_id)
     if not order:
         return await c.answer("Order topilmadi.", show_alert=True)
 
-    # status yangilanadi (safe_edit bilan)
-    text = f"🧾 Order: `{order_id}`\nStatus: **{order['status']}**"
-    await safe_edit(c.message, text, reply_markup=pay_kb(order_id, order["expected_nano"]))
-    # show updated status
+    try:
+        if order["status"] == "PENDING":
+            found = await ton.scan_for_order(db, order_id)
+            order = await db.get_order(order_id)  # refresh
+            if not found and order and order["status"] == "PENDING":
+                await c.answer("⏳ Hali payment topilmadi. 10-20s kutib yana bosing.", show_alert=True)
+    except Exception as e:
+        return await c.answer(f"❌ TONCenter xatolik: {e}", show_alert=True)
+
     order = await db.get_order(order_id)
     gift = GIFTS_BY_ID.get(order["gift_id"])
     gift_txt = f"{gift.label} (⭐{gift.stars})" if gift else f"id={order['gift_id']}"
@@ -695,7 +737,7 @@ async def cb_pay_check(c: CallbackQuery):
     await safe_edit(c.message, msg, reply_markup=pay_kb(order_id, order["expected_nano"]))
 
 
-# ----------------- Background workers -----------------
+# ---------------- Background loops ----------------
 async def ton_scan_loop():
     while True:
         try:
@@ -715,12 +757,15 @@ async def delivery_loop():
                     gift = GIFTS_BY_ID[gift_id]
                     receiver, comment, _ = await db.get_settings(user_id)
                     final_comment = comment or f"Order: {order_id}"
+
                     await relayer.send_gift(target=target, gift=gift, comment=final_comment)
                     await db.mark_sent(order_id)
+
                     try:
                         await bot.send_message(user_id, f"🎁 Gift yuborildi! {gift.label}\nOrder: `{order_id}`")
                     except Exception:
                         pass
+
                 except Exception as e:
                     reason = f"{type(e).__name__}: {e}"
                     await db.mark_failed(order_id, reason)
@@ -734,7 +779,7 @@ async def delivery_loop():
         await asyncio.sleep(3)
 
 
-# ----------------- Main -----------------
+# ---------------- Main ----------------
 async def main():
     await db.start()
     await ton.start()
