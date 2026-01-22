@@ -723,22 +723,155 @@ async def pay_check(c: CallbackQuery):
 
 
 async def main():
-    await db_init()
-    await cryptopay.start()
-    me = await relayer.start()
-    print(f"[RELAYER] authorized as: id={me.id} username={me.username}")
+    DB_PATH = "bot.db"
 
-    watcher = asyncio.create_task(invoice_watcher())
-    try:
-        await dp.start_polling(bot)
-    finally:
-        watcher.cancel()
-        try:
-            await watcher
-        except Exception:
-            pass
-        await relayer.stop()
-        await cryptopay.close()
+async def db_init():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode=WAL;")
+        await db.execute("PRAGMA synchronous=NORMAL;")
+        await db.execute("PRAGMA busy_timeout=5000;")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            target TEXT DEFAULT 'me',
+            comment TEXT DEFAULT NULL,
+            selected_gift_id INTEGER DEFAULT NULL,
+            hide_name INTEGER DEFAULT 0
+        )
+        """)
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_user_id INTEGER NOT NULL,
+            target TEXT NOT NULL,
+            gift_id INTEGER NOT NULL,
+            stars INTEGER NOT NULL,
+            comment TEXT DEFAULT NULL,
+            hide_name INTEGER DEFAULT 0,
+            amount TEXT NOT NULL,
+            invoice_id INTEGER DEFAULT NULL,
+            invoice_url TEXT DEFAULT NULL,
+            status TEXT NOT NULL DEFAULT 'created',
+            comment_attached INTEGER DEFAULT NULL,
+            error TEXT DEFAULT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+        await db.commit()
+
+
+async def db_ensure_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO user_settings(user_id) VALUES(?)", (user_id,))
+        await db.commit()
+
+
+async def db_get_settings(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT target, comment, selected_gift_id, hide_name FROM user_settings WHERE user_id=?",
+            (user_id,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return ("me", None, None, 0)
+        return (row[0] or "me", row[1], row[2], int(row[3] or 0))
+
+
+async def db_set_target(user_id: int, target: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_settings SET target=? WHERE user_id=?", (target, user_id))
+        await db.commit()
+
+
+async def db_set_comment(user_id: int, comment):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_settings SET comment=? WHERE user_id=?", (comment, user_id))
+        await db.commit()
+
+
+async def db_set_selected_gift(user_id: int, gift_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE user_settings SET selected_gift_id=? WHERE user_id=?", (gift_id, user_id))
+        await db.commit()
+
+
+async def db_toggle_hide_name(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT hide_name FROM user_settings WHERE user_id=?", (user_id,))
+        row = await cur.fetchone()
+        cur_val = int(row[0] or 0) if row else 0
+        new_val = 0 if cur_val == 1 else 1
+        await db.execute("UPDATE user_settings SET hide_name=? WHERE user_id=?", (new_val, user_id))
+        await db.commit()
+        return new_val
+
+
+async def db_create_order(tg_user_id, target, gift_id, stars, comment, hide_name, amount) -> int:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            INSERT INTO orders (tg_user_id, target, gift_id, stars, comment, hide_name, amount, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?, 'created', ?, ?)
+        """, (tg_user_id, target, gift_id, stars, comment, hide_name, amount, now, now))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def db_set_invoice(order_id: int, invoice_id: int, invoice_url: str):
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE orders SET invoice_id=?, invoice_url=?, status='invoice_active', updated_at=?
+            WHERE order_id=?
+        """, (invoice_id, invoice_url, now, order_id))
+        await db.commit()
+
+
+async def db_mark_paid(order_id: int):
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE orders SET status='paid', updated_at=? WHERE order_id=?", (now, order_id))
+        await db.commit()
+
+
+async def db_mark_sending(order_id: int):
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE orders SET status='sending', updated_at=? WHERE order_id=?", (now, order_id))
+        await db.commit()
+
+
+async def db_mark_sent(order_id: int, comment_attached):
+    now = int(time.time())
+    val = None if comment_attached is None else (1 if comment_attached else 0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE orders SET status='sent', comment_attached=?, updated_at=? WHERE order_id=?
+        """, (val, now, order_id))
+        await db.commit()
+
+
+async def db_mark_failed(order_id: int, error: str):
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE orders SET status='failed', error=?, updated_at=? WHERE order_id=?", (error[:700], now, order_id))
+        await db.commit()
+
+
+async def db_get_active_orders(limit: int = 150):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT order_id, tg_user_id, target, gift_id, stars, comment, hide_name, amount, invoice_id, invoice_url, status
+            FROM orders
+            WHERE status IN ('invoice_active','paid')
+            ORDER BY updated_at ASC
+            LIMIT ?
+        """, (limit,))
+        return await cur.fetchall()
 
 if __name__ == "__main__":
     asyncio.run(main())
