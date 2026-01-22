@@ -441,7 +441,10 @@ class Relayer:
             t = t[:120]
         return t
 
-    async def send_star_gift(
+
+#----------------
+
+async def send_star_gift(
         self,
         *,
         target: Union[str, int],
@@ -450,11 +453,7 @@ class Relayer:
         hide_name: bool,
     ) -> bool:
         async with self._lock:
-            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
-            if isinstance(can, types.payments.CheckCanSendGiftResultFail):
-                reason = getattr(can.reason, "text", None) or str(can.reason)
-                raise RuntimeError(f"Can't send gift: {reason}")
-
+            # 1) resolve entity
             try:
                 peer = await self.client.get_input_entity(target)
             except Exception:
@@ -465,9 +464,11 @@ class Relayer:
                     )
                 raise
 
+            # 2) comment ixtiyoriy
             cleaned = self._clean_comment(comment)
             msg_obj = types.TextWithEntities(text=cleaned, entities=[]) if cleaned else None
 
+            # 3) hide_name faqat True bo'lsa uzatiladi
             extra = {}
             if hide_name:
                 extra["hide_name"] = True
@@ -482,6 +483,7 @@ class Relayer:
                 form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
                 await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
 
+            # 4) 1-urinish comment bilan; invalid bo‘lsa comment-siz qayta
             if msg_obj is None:
                 await _try_send(None)
                 return False
@@ -494,8 +496,6 @@ class Relayer:
                     await _try_send(None)
                     return False
                 raise
-
-
 # =========================
 # Utils
 # =========================
