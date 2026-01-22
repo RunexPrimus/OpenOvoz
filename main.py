@@ -23,7 +23,40 @@ from telethon.sessions import StringSession
 from telethon.errors import RPCError
 
 from aiohttp import web
+from contextlib import asynccontextmanager
+import aiosqlite
+import os, time
+import logging
 
+log = logging.getLogger("giftbot")
+DB_PATH = os.getenv("DB_PATH", "bot.db")
+
+@asynccontextmanager
+async def db_connect():
+    """
+    Correct aiosqlite usage:
+    - do NOT 'await connect' and then 'async with' it again.
+    - open inside context, close automatically.
+    """
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
+            await db.execute("PRAGMA foreign_keys=ON;")
+            await db.execute("PRAGMA busy_timeout=5000;")
+            yield db
+    except aiosqlite.DatabaseError as e:
+        # if corrupted -> rename and recreate next run
+        msg = str(e).lower()
+        if "malformed" in msg or "disk image" in msg:
+            ts = int(time.time())
+            corrupt_name = f"{DB_PATH}.corrupt.{ts}"
+            try:
+                os.replace(DB_PATH, corrupt_name)
+                log.error("DB corrupted -> renamed to %s", corrupt_name)
+            except Exception:
+                pass
+        raise
 
 # =========================
 # Logging
@@ -154,7 +187,7 @@ async def _db_connect() -> aiosqlite.Connection:
 
 
 async def db_init():
-    async with await _db_connect() as db:
+    async with db_connect() as db:
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id INTEGER PRIMARY KEY,
@@ -179,7 +212,7 @@ async def db_init():
 
             invoice_id INTEGER,
             invoice_url TEXT,
-            status TEXT NOT NULL DEFAULT 'creating', -- creating|active|paid|sending|sent|failed|expired|canceled
+            status TEXT NOT NULL DEFAULT 'creating',
             error TEXT DEFAULT NULL,
 
             created_at INTEGER NOT NULL,
@@ -190,6 +223,7 @@ async def db_init():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);")
         await db.commit()
 
+log.info("BOOT: db_init OK")
 
 async def db_ensure_user(user_id: int, default_target: Optional[str] = None):
     async with await _db_connect() as db:
@@ -1189,7 +1223,8 @@ async def start_web_server() -> web.AppRunner:
     log.info("Web server listening on %s:%s", WEB_BIND, PORT)
     return runner
 
-
+#----------------------
+log.info("BOOT: starting...")
 # =========================
 # Main
 # =========================
