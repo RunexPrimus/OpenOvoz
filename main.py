@@ -441,10 +441,8 @@ class Relayer:
             t = t[:120]
         return t
 
-
-#----------------
-
-async def send_star_gift(
+    # ✅ MUHIM: bu metod class ichida bo‘lishi shart
+    async def send_star_gift(
         self,
         *,
         target: Union[str, int],
@@ -496,6 +494,10 @@ async def send_star_gift(
                     await _try_send(None)
                     return False
                 raise
+#----------------
+
+
+            
 # =========================
 # Utils
 # =========================
