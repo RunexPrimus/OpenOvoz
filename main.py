@@ -20,6 +20,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from aiogram.exceptions import TelegramBadRequest
+
 from telethon import TelegramClient, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import RPCError
@@ -49,7 +51,6 @@ def env_required(name: str) -> str:
 
 
 BOT_TOKEN = env_required("BOT_TOKEN")
-
 TG_API_ID = int(env_required("TG_API_ID"))
 TG_API_HASH = env_required("TG_API_HASH")
 RELAYER_SESSION = env_required("RELAYER_SESSION")
@@ -57,11 +58,11 @@ RELAYER_SESSION = env_required("RELAYER_SESSION")
 CRYPTOPAY_TOKEN = env_required("CRYPTOPAY_TOKEN")
 CRYPTOPAY_BASE_URL = os.getenv("CRYPTOPAY_BASE_URL", "https://pay.crypt.bot").rstrip("/")
 
-# Pricing
+# pricing
 PRICE_PER_STAR = float(os.getenv("PRICE_PER_STAR", "0.02"))
 PRICE_MIN = float(os.getenv("PRICE_MIN", "0.10"))
 
-CURRENCY_TYPE = os.getenv("CRYPTOPAY_CURRENCY_TYPE", "crypto").lower().strip()  # "crypto" | "fiat"
+CURRENCY_TYPE = os.getenv("CRYPTOPAY_CURRENCY_TYPE", "crypto").lower().strip()  # crypto|fiat
 PAY_ASSET = os.getenv("CRYPTOPAY_ASSET", "USDT").upper().strip()
 PAY_FIAT = os.getenv("CRYPTOPAY_FIAT", "USD").upper().strip()
 ACCEPTED_ASSETS = os.getenv("CRYPTOPAY_ACCEPTED_ASSETS", "USDT,TON").upper().strip()
@@ -75,12 +76,11 @@ DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 PORT = int(os.getenv("PORT", "8080"))
 WEB_BIND = os.getenv("WEB_BIND", "0.0.0.0")
-
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip()  # optional
 
 
 # =========================
-# Gifts
+# Gift catalog
 # =========================
 @dataclass(frozen=True)
 class GiftItem:
@@ -115,7 +115,7 @@ ALLOWED_PRICES = sorted(GIFTS_BY_PRICE.keys())
 
 
 # =========================
-# DB (FIXED)
+# DB (aiosqlite fixed)
 # =========================
 @asynccontextmanager
 async def db_connect():
@@ -255,17 +255,6 @@ async def db_attach_invoice(order_id: int, invoice_id: int, invoice_url: str):
         await db.commit()
 
 
-async def db_mark_status(order_id: int, status: str, error: Optional[str] = None):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            UPDATE orders
-            SET status=?, error=?, updated_at=?
-            WHERE order_id=?
-        """, (status, error, now, order_id))
-        await db.commit()
-
-
 async def db_get_order(order_id: int) -> Optional[dict]:
     async with db_connect() as db:
         cur = await db.execute("""
@@ -324,8 +313,19 @@ async def db_get_active_orders(limit: int = 200) -> List[dict]:
         return out
 
 
+async def db_mark_status(order_id: int, status: str, error: Optional[str] = None):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+            UPDATE orders
+            SET status=?, error=?, updated_at=?
+            WHERE order_id=?
+        """, (status, error, now, order_id))
+        await db.commit()
+
+
 # =========================
-# Crypto Pay API client
+# Crypto Pay API
 # =========================
 class CryptoPayAPI:
     def __init__(self, token: str, base_url: str):
@@ -406,7 +406,7 @@ class CryptoPayAPI:
 
 
 # =========================
-# Relayer (Telethon)
+# Relayer
 # =========================
 class Relayer:
     def __init__(self):
@@ -466,9 +466,7 @@ class Relayer:
                 raise
 
             cleaned = self._clean_comment(comment)
-            msg_obj = None
-            if cleaned:
-                msg_obj = types.TextWithEntities(text=cleaned, entities=[])
+            msg_obj = types.TextWithEntities(text=cleaned, entities=[]) if cleaned else None
 
             extra = {}
             if hide_name:
@@ -547,6 +545,33 @@ def resolve_target_for_user(stored_target: str, user_id: int, username: Optional
     return "@" + t
 
 
+async def safe_edit(
+    msg,
+    *,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+):
+    """
+    Avoids 'message is not modified' when user presses button repeatedly.
+    - If content is the same -> just ignore or show toast.
+    - Also catches TelegramBadRequest and silently ignores that specific case.
+    """
+    try:
+        current_text = getattr(msg, "text", None) or ""
+        if current_text == text:
+            # if markup also same, skip editing
+            current_kb = getattr(msg, "reply_markup", None)
+            if (reply_markup is None and current_kb is None) or (reply_markup is not None and current_kb == reply_markup):
+                return False
+
+        await msg.edit_text(text, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return False
+        raise
+
+
 # =========================
 # UI
 # =========================
@@ -623,9 +648,8 @@ async def render_status(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
     )
     return text, main_menu_kb(anonymous)
 
-
 # =========================
-# App objects
+# App
 # =========================
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -638,23 +662,131 @@ _processing_lock = asyncio.Lock()
 
 
 # =========================
+# Delivery logic
+# =========================
+async def process_paid_order(order: dict):
+    order_id = int(order["order_id"])
+
+    async with _processing_lock:
+        if order_id in _processing_orders:
+            return
+        _processing_orders.add(order_id)
+
+    try:
+        # prevent double-send if status already sent
+        full = await db_get_order(order_id)
+        if not full:
+            return
+        if full["status"] in ("sent", "sending"):
+            return
+
+        await db_mark_status(order_id, "sending")
+
+        gift = GIFTS_BY_ID.get(int(full["gift_id"]))
+        if not gift:
+            raise RuntimeError("Gift not found in catalog")
+
+        stored_target = str(full["target"])
+        if stored_target.startswith("@"):
+            target: Union[str, int] = stored_target
+        elif stored_target.isdigit():
+            target = int(stored_target)
+        else:
+            target = stored_target
+
+        comment = full.get("comment")
+        anonymous = int(full.get("anonymous") or 0)
+
+        comment_attached = await relayer.send_star_gift(
+            target=target,
+            gift=gift,
+            comment=comment,
+            hide_name=(anonymous == 1),
+        )
+
+        await db_mark_status(order_id, "sent")
+
+        msg = (
+            "✅ Sovg‘a yuborildi!\n"
+            f"🧾 Buyurtma: #{order_id}\n"
+            f"🎁 {gift.label} (⭐{gift.stars})\n"
+            f"🎯 Target: {stored_target}\n"
+            f"🔒 Rejim: {'ANONIM' if anonymous == 1 else 'PROFIL'}\n"
+        )
+        if comment:
+            msg += f"💬 Comment: {comment}\n"
+            if not comment_attached:
+                msg += "⚠️ Komment qabul qilinmadi (fallback comment-siz yuborildi).\n"
+
+        await bot.send_message(int(full["user_id"]), msg)
+
+    except Exception as e:
+        await db_mark_status(order_id, "failed", error=str(e))
+        await admin_notify(f"❌ Delivery failed | order #{order_id} | {e}")
+        try:
+            await bot.send_message(int(order["user_id"]), f"❌ Sovg‘ani yuborib bo‘lmadi.\n🧾 Buyurtma: #{order_id}\nXatolik: {e}")
+        except Exception:
+            pass
+    finally:
+        async with _processing_lock:
+            _processing_orders.discard(order_id)
+
+
+# =========================
+# Background watcher
+# =========================
+async def invoice_watcher():
+    while True:
+        try:
+            orders = await db_get_active_orders(limit=200)
+
+            # if something is already marked paid (manual check), send it
+            for o in orders:
+                if o.get("status") == "paid":
+                    asyncio.create_task(process_paid_order(o), name=f"send_order_{o['order_id']}")
+
+            active = [o for o in orders if o.get("status") == "active" and o.get("invoice_id")]
+            if not active:
+                await asyncio.sleep(INVOICE_POLL_INTERVAL)
+                continue
+
+            invoice_map = {int(o["invoice_id"]): o for o in active}
+            invoice_ids = list(invoice_map.keys())
+
+            chunk_size = 80
+            for i in range(0, len(invoice_ids), chunk_size):
+                chunk = invoice_ids[i:i + chunk_size]
+                ids_str = ",".join(str(x) for x in chunk)
+                items = await cryptopay.get_invoices(invoice_ids=ids_str)
+
+                for inv in items:
+                    inv_id = int(inv.get("invoice_id"))
+                    status = inv.get("status")
+                    order = invoice_map.get(inv_id)
+                    if not order:
+                        continue
+
+                    if status == "paid":
+                        await db_mark_status(int(order["order_id"]), "paid")
+                        asyncio.create_task(process_paid_order(order), name=f"send_order_{order['order_id']}")
+                    elif status == "expired":
+                        await db_mark_status(int(order["order_id"]), "expired", error="Invoice expired")
+
+            await asyncio.sleep(INVOICE_POLL_INTERVAL)
+
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.error("invoice_watcher error: %s", e)
+            await asyncio.sleep(max(5.0, INVOICE_POLL_INTERVAL))
+        # =========================
 # Handlers
 # =========================
 @dp.message(Command("start"))
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
-
     default_target = f"@{m.from_user.username}" if m.from_user.username else str(m.from_user.id)
     await db_ensure_user(m.from_user.id, default_target=default_target)
-
-    text, kb = await render_status(m.from_user.id)
-    await m.answer(text, reply_markup=kb)
-
-
-@dp.message(Command("menu"))
-async def cmd_menu(m: Message, state: FSMContext):
-    await state.clear()
-    await db_ensure_user(m.from_user.id)
     text, kb = await render_status(m.from_user.id)
     await m.answer(text, reply_markup=kb)
 
@@ -665,7 +797,7 @@ async def menu_home(c: CallbackQuery, state: FSMContext):
     await state.clear()
     await db_ensure_user(c.from_user.id)
     text, kb = await render_status(c.from_user.id)
-    await c.message.edit_text(text, reply_markup=kb)
+    await safe_edit(c.message, text=text, reply_markup=kb)
 
 
 @dp.callback_query(F.data == "toggle:anon")
@@ -676,7 +808,7 @@ async def toggle_anon(c: CallbackQuery, state: FSMContext):
     new_val = await db_toggle_anonymous(c.from_user.id)
     text, kb = await render_status(c.from_user.id)
     note = "✅ Anonim yoqildi (hide name)" if new_val == 1 else "✅ Profil ko‘rinadi (show name)"
-    await c.message.edit_text(note + "\n\n" + text, reply_markup=kb)
+    await safe_edit(c.message, text=note + "\n\n" + text, reply_markup=kb)
 
 
 @dp.callback_query(F.data == "menu:target")
@@ -684,13 +816,16 @@ async def menu_target(c: CallbackQuery, state: FSMContext):
     await c.answer()
     await db_ensure_user(c.from_user.id)
     await state.set_state(Form.waiting_target)
-    await c.message.edit_text(
-        "🎯 Qabul qiluvchini yuboring:\n"
-        "- `me` (siz)\n"
-        "- `@username`\n"
-        "- `user_id` (raqam)\n\n"
-        "✅ Eng ishonchlisi: @username\n"
-        "⚠️ user_id ba’zan ishlamasligi mumkin.",
+    await safe_edit(
+        c.message,
+        text=(
+            "🎯 Qabul qiluvchini yuboring:\n"
+            "- `me` (siz)\n"
+            "- `@username`\n"
+            "- `user_id` (raqam)\n\n"
+            "✅ Eng ishonchlisi: @username\n"
+            "⚠️ user_id ba’zan ishlamasligi mumkin."
+        ),
         reply_markup=back_menu_kb()
     )
 
@@ -700,10 +835,13 @@ async def menu_comment(c: CallbackQuery, state: FSMContext):
     await c.answer()
     await db_ensure_user(c.from_user.id)
     await state.set_state(Form.waiting_comment)
-    await c.message.edit_text(
-        "💬 Komment yuboring (ixtiyoriy).\n"
-        "O‘chirish uchun: `-` yuboring.\n"
-        "Masalan: `Congrats 🎁` yoki `:)`",
+    await safe_edit(
+        c.message,
+        text=(
+            "💬 Komment yuboring (ixtiyoriy).\n"
+            "O‘chirish uchun: `-` yuboring.\n"
+            "Masalan: `Congrats 🎁` yoki `:)`"
+        ),
         reply_markup=back_menu_kb()
     )
 
@@ -713,7 +851,7 @@ async def menu_gift(c: CallbackQuery, state: FSMContext):
     await c.answer()
     await state.clear()
     await db_ensure_user(c.from_user.id)
-    await c.message.edit_text("🎁 Sovg‘a narxini tanlang:", reply_markup=price_kb())
+    await safe_edit(c.message, text="🎁 Sovg‘a narxini tanlang:", reply_markup=price_kb())
 
 
 @dp.callback_query(F.data.startswith("price:"))
@@ -721,8 +859,8 @@ async def choose_price(c: CallbackQuery):
     await c.answer()
     price = int(c.data.split(":", 1)[1])
     if price not in GIFTS_BY_PRICE:
-        return await c.message.edit_text("Bunday narx yo‘q.", reply_markup=price_kb())
-    await c.message.edit_text(f"⭐ {price} bo‘yicha sovg‘a tanlang:", reply_markup=gifts_by_price_kb(price))
+        return await safe_edit(c.message, text="Bunday narx yo‘q.", reply_markup=price_kb())
+    await safe_edit(c.message, text=f"⭐ {price} bo‘yicha sovg‘a tanlang:", reply_markup=gifts_by_price_kb(price))
 
 
 @dp.callback_query(F.data.startswith("gift:"))
@@ -730,14 +868,17 @@ async def choose_gift(c: CallbackQuery):
     await c.answer()
     gift_id = int(c.data.split(":", 1)[1])
     if gift_id not in GIFTS_BY_ID:
-        return await c.message.edit_text("Gift topilmadi.", reply_markup=price_kb())
+        return await safe_edit(c.message, text="Gift topilmadi.", reply_markup=price_kb())
     await db_set_selected_gift(c.from_user.id, gift_id)
 
     g = GIFTS_BY_ID[gift_id]
     anon = (await db_get_settings(c.from_user.id))[3]
-    await c.message.edit_text(
-        f"✅ Sovg‘a tanlandi:\n{g.label} (⭐{g.stars})\nID: {g.id}\n\n"
-        "Endi: 💳 Invoice yarating.",
+    await safe_edit(
+        c.message,
+        text=(
+            f"✅ Sovg‘a tanlandi:\n{g.label} (⭐{g.stars})\nID: {g.id}\n\n"
+            "Endi: 💳 CryptoBot Invoice yarating."
+        ),
         reply_markup=main_menu_kb(anon)
     )
 
@@ -768,7 +909,6 @@ async def set_comment(m: Message, state: FSMContext):
     text, kb = await render_status(m.from_user.id)
     await m.answer("✅ Komment saqlandi.\n\n" + text, reply_markup=kb)
 
-
 # =========================
 # Payments
 # =========================
@@ -776,11 +916,11 @@ async def set_comment(m: Message, state: FSMContext):
 async def pay_create(c: CallbackQuery):
     await c.answer()
     await db_ensure_user(c.from_user.id)
-    target_str, comment, sel_gift_id, anonymous = await db_get_settings(c.from_user.id)
 
+    target_str, comment, sel_gift_id, anonymous = await db_get_settings(c.from_user.id)
     if not sel_gift_id or sel_gift_id not in GIFTS_BY_ID:
         text, kb = await render_status(c.from_user.id)
-        return await c.message.edit_text("❌ Avval sovg‘ani tanlang.\n\n" + text, reply_markup=kb)
+        return await safe_edit(c.message, text="❌ Avval sovg‘ani tanlang.\n\n" + text, reply_markup=kb)
 
     gift = GIFTS_BY_ID[sel_gift_id]
     target = resolve_target_for_user(target_str, c.from_user.id, c.from_user.username)
@@ -799,14 +939,17 @@ async def pay_create(c: CallbackQuery):
         price_currency=price_currency,
     )
 
-    await c.message.edit_text(
-        "⏳ Invoice yaratilmoqda...\n"
-        f"🧾 Buyurtma: #{order_id}\n"
-        f"🎁 Gift: {gift.label} (⭐{gift.stars})\n"
-        f"🎯 Target: {target}\n"
-        f"🔒 Rejim: {'ANONIM' if anonymous == 1 else 'PROFIL'}\n"
-        f"💬 Comment: {(comment if comment else '(bo‘sh)')}\n"
-        f"💵 To‘lov: {amount_str} {price_currency}",
+    await safe_edit(
+        c.message,
+        text=(
+            "⏳ Invoice yaratilmoqda...\n"
+            f"🧾 Buyurtma: #{order_id}\n"
+            f"🎁 Gift: {gift.label} (⭐{gift.stars})\n"
+            f"🎯 Target: {target}\n"
+            f"🔒 Rejim: {'ANONIM' if anonymous == 1 else 'PROFIL'}\n"
+            f"💬 Comment: {(comment if comment else '(bo‘sh)')}\n"
+            f"💵 To‘lov: {amount_str} {price_currency}"
+        ),
         reply_markup=None
     )
 
@@ -834,13 +977,16 @@ async def pay_create(c: CallbackQuery):
 
         await db_attach_invoice(order_id, invoice_id, invoice_url)
 
-        await c.message.edit_text(
-            "✅ Invoice tayyor!\n\n"
-            f"🧾 Buyurtma: #{order_id}\n"
-            f"🎁 Gift: {gift.label} (⭐{gift.stars})\n"
-            f"🎯 Target: {target}\n"
-            f"💵 To‘lov: {amount_str} {price_currency}\n\n"
-            "To‘lang, bot o‘zi tekshiradi va sovg‘ani yuboradi.",
+        await safe_edit(
+            c.message,
+            text=(
+                "✅ Invoice tayyor!\n\n"
+                f"🧾 Buyurtma: #{order_id}\n"
+                f"🎁 Gift: {gift.label} (⭐{gift.stars})\n"
+                f"🎯 Target: {target}\n"
+                f"💵 To‘lov: {amount_str} {price_currency}\n\n"
+                "To‘lang, bot o‘zi tekshiradi va sovg‘ani yuboradi."
+            ),
             reply_markup=pay_invoice_kb(invoice_url, order_id)
         )
 
@@ -848,7 +994,7 @@ async def pay_create(c: CallbackQuery):
         await db_mark_status(order_id, "failed", error=str(e))
         await admin_notify(f"❌ Invoice create failed | order #{order_id} | {e}")
         text, kb = await render_status(c.from_user.id)
-        await c.message.edit_text(f"❌ Invoice yaratib bo‘lmadi: {e}\n\n" + text, reply_markup=kb)
+        await safe_edit(c.message, text=f"❌ Invoice yaratib bo‘lmadi: {e}\n\n" + text, reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("pay:check:"))
@@ -856,145 +1002,63 @@ async def pay_check(c: CallbackQuery):
     await c.answer()
     order_id = int(c.data.split(":")[-1])
     order = await db_get_order(order_id)
-    if not order or order["user_id"] != c.from_user.id:
-        return await c.message.edit_text("❌ Buyurtma topilmadi yoki ruxsat yo‘q.", reply_markup=back_menu_kb())
+
+    if not order or int(order["user_id"]) != int(c.from_user.id):
+        return await safe_edit(c.message, text="❌ Buyurtma topilmadi yoki ruxsat yo‘q.", reply_markup=back_menu_kb())
 
     inv_id = order.get("invoice_id")
     if not inv_id:
-        return await c.message.edit_text("❌ Invoice yo‘q.", reply_markup=back_menu_kb())
+        return await safe_edit(c.message, text="❌ Invoice yo‘q.", reply_markup=back_menu_kb())
 
     try:
-        items = await cryptopay.get_invoices(invoice_ids=str(inv_id))
+        items = await cryptopay.get_invoices(invoice_ids=str(int(inv_id)))
         inv = items[0] if items else None
         if not inv:
-            return await c.message.edit_text("❌ Invoice topilmadi (API).", reply_markup=back_menu_kb())
+            # 2 marta bosilsa ham edit mod xatosiz
+            await c.answer("Invoice topilmadi (API)", show_alert=False)
+            return
 
         status = inv.get("status")
+
         if status == "paid":
+            # mark paid and start delivery immediately
             await db_mark_status(order_id, "paid", error=None)
-            return await c.message.edit_text("✅ Invoice PAID ✅\nSovg‘a yuborish navbatga qo‘shildi.", reply_markup=back_menu_kb())
+            asyncio.create_task(process_paid_order(order), name=f"send_order_{order_id}")
+
+            await safe_edit(
+                c.message,
+                text="✅ Invoice PAID ✅\n🎁 Sovg‘a avtomatik yuborilmoqda...",
+                reply_markup=back_menu_kb()
+            )
+            return
 
         if status == "expired":
             await db_mark_status(order_id, "expired", error="Invoice expired")
-            return await c.message.edit_text("⌛ Invoice muddati tugagan (expired).", reply_markup=back_menu_kb())
+            await safe_edit(c.message, text="⌛ Invoice muddati tugagan (expired).", reply_markup=back_menu_kb())
+            return
 
-        return await c.message.edit_text(
+        # not paid yet
+        text = (
             f"🧾 Buyurtma: #{order_id}\n"
             f"📌 Invoice status: {status}\n\n"
-            "To‘lagan bo‘lsangiz, 5-10 soniyada yangilanadi.",
-            reply_markup=pay_invoice_kb(order["invoice_url"], order_id) if order.get("invoice_url") else back_menu_kb()
+            "To‘lagan bo‘lsangiz, 5-10 soniyada yangilanadi."
         )
-    except Exception as e:
-        return await c.message.edit_text(f"❌ Tekshirish xatoligi: {e}", reply_markup=back_menu_kb())
+        kb = pay_invoice_kb(order["invoice_url"], order_id) if order.get("invoice_url") else back_menu_kb()
 
-
-# =========================
-# Background watcher
-# =========================
-async def process_paid_order(order: dict):
-    order_id = int(order["order_id"])
-    async with _processing_lock:
-        if order_id in _processing_orders:
-            return
-        _processing_orders.add(order_id)
-
-    try:
-        await db_mark_status(order_id, "sending")
-
-        gift = GIFTS_BY_ID.get(int(order["gift_id"]))
-        if not gift:
-            raise RuntimeError("Gift not found in catalog")
-
-        stored_target = str(order["target"])
-        if stored_target.startswith("@"):
-            target: Union[str, int] = stored_target
-        elif stored_target.isdigit():
-            target = int(stored_target)
-        else:
-            target = stored_target
-
-        comment = order.get("comment")
-        anonymous = int(order.get("anonymous") or 0)
-
-        comment_attached = await relayer.send_star_gift(
-            target=target,
-            gift=gift,
-            comment=comment,
-            hide_name=(anonymous == 1),
-        )
-
-        await db_mark_status(order_id, "sent")
-
-        msg = (
-            "✅ Sovg‘a yuborildi!\n"
-            f"🧾 Buyurtma: #{order_id}\n"
-            f"🎁 {gift.label} (⭐{gift.stars})\n"
-            f"🎯 Target: {stored_target}\n"
-            f"🔒 Rejim: {'ANONIM' if anonymous == 1 else 'PROFIL'}\n"
-        )
-        if comment:
-            msg += f"💬 Comment: {comment}\n"
-            if not comment_attached:
-                msg += "⚠️ Komment qabul qilinmadi (fallback comment-siz yuborildi).\n"
-
-        await bot.send_message(int(order["user_id"]), msg)
+        edited = await safe_edit(c.message, text=text, reply_markup=kb)
+        if not edited:
+            # second click with same content -> just toast
+            await c.answer("Hali to‘lanmagan (o‘zgarmadi).", show_alert=False)
 
     except Exception as e:
-        await db_mark_status(order_id, "failed", error=str(e))
-        await admin_notify(f"❌ Delivery failed | order #{order_id} | {e}")
-        try:
-            await bot.send_message(int(order["user_id"]), f"❌ Sovg‘ani yuborib bo‘lmadi.\n🧾 Buyurtma: #{order_id}\nXatolik: {e}")
-        except Exception:
-            pass
-    finally:
-        async with _processing_lock:
-            _processing_orders.discard(order_id)
-
-
-async def invoice_watcher():
-    while True:
-        try:
-            orders = await db_get_active_orders(limit=200)
-            active = [o for o in orders if o.get("status") == "active" and o.get("invoice_id")]
-            if not active:
-                await asyncio.sleep(INVOICE_POLL_INTERVAL)
-                continue
-
-            invoice_map = {int(o["invoice_id"]): o for o in active}
-            invoice_ids = list(invoice_map.keys())
-
-            chunk_size = 80
-            for i in range(0, len(invoice_ids), chunk_size):
-                chunk = invoice_ids[i:i + chunk_size]
-                ids_str = ",".join(str(x) for x in chunk)
-                items = await cryptopay.get_invoices(invoice_ids=ids_str)
-
-                for inv in items:
-                    inv_id = int(inv.get("invoice_id"))
-                    status = inv.get("status")
-                    order = invoice_map.get(inv_id)
-                    if not order:
-                        continue
-
-                    if status == "paid":
-                        await db_mark_status(int(order["order_id"]), "paid")
-                        await process_paid_order(order)
-                    elif status == "expired":
-                        await db_mark_status(int(order["order_id"]), "expired", error="Invoice expired")
-
-            await asyncio.sleep(INVOICE_POLL_INTERVAL)
-
-        except asyncio.CancelledError:
-            return
-        except Exception as e:
-            log.error("invoice_watcher error: %s", e)
-            await asyncio.sleep(max(5.0, INVOICE_POLL_INTERVAL))
+        # don't spam 'message not modified' here; safe_edit already handles
+        await c.answer(f"Tekshirish xatoligi: {e}", show_alert=True)
 
 
 # =========================
 # Web server (health)
 # =========================
-async def web_health(request: web.Request):
+async def web_health(_request: web.Request):
     return web.json_response({"ok": True})
 
 
