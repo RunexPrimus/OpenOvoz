@@ -3,3 +3,4 @@ telethon==1.36.0
 python-dotenv==1.0.1
 aiosqlite==0.20.0
 aiohttp==3.9.5
+telethon @ https://github.com/LonamiWebs/Telethon/archive/v1.zip
