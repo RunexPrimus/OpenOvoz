@@ -82,7 +82,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip()  # optional for paid button
 
 # =========================
 # i18n
-# =========================
+# ========================
 LANGS = ("uz", "ru", "en")
 
 T = {
