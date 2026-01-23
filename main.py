@@ -377,8 +377,8 @@ T = {
 
 
 def t(lang: str, key: str, **kw) -> str:
-    lang = lang if lang in T else "uz"
-    s = T[lang].get(key) or T["uz"].get(key) or key
+    lang = lang if lang in T else "ru"
+    s = T[lang].get(key) or T["ru"].get(key) or key
     try:
         return s.format(**kw)
     except Exception:
@@ -456,7 +456,7 @@ async def db_init():
             comment TEXT DEFAULT NULL,
             selected_gift_id INTEGER DEFAULT NULL,
             anonymous INTEGER DEFAULT 0,
-            lang TEXT DEFAULT 'uz'
+            lang TEXT DEFAULT 'ru'
         );
         """)
         await db.execute("""
@@ -488,7 +488,7 @@ async def db_init():
         );
         """)
         # migrations for older DB
-        await _add_column_if_missing(db, "user_settings", "lang", "lang TEXT DEFAULT 'uz'")
+        await _add_column_if_missing(db, "user_settings", "lang", "lang TEXT DEFAULT 'ru'")
         await _add_column_if_missing(db, "orders", "origin_chat_id", "origin_chat_id INTEGER")
         await _add_column_if_missing(db, "orders", "origin_message_id", "origin_message_id INTEGER")
         await _add_column_if_missing(db, "orders", "paid_at", "paid_at INTEGER")
@@ -519,17 +519,17 @@ async def db_get_settings(user_id: int) -> Tuple[str, Optional[str], Optional[in
         )
         row = await cur.fetchone()
         if not row:
-            return ("me", None, None, 0, "uz")
-        lang = (row[4] or "uz").lower()
+            return ("me", None, None, 0, "ru")
+        lang = (row[4] or "ru").lower()
         if lang not in LANGS:
-            lang = "uz"
+            lang = "ru"
         return (row[0] or "me", row[1], row[2], int(row[3] or 0), lang)
 
 
 async def db_set_lang(user_id: int, lang: str):
-    lang = (lang or "uz").lower()
+    lang = (lang or "ru").lower()
     if lang not in LANGS:
-        lang = "uz"
+        lang = "ru"
     async with db_connect() as db:
         await db.execute("UPDATE user_settings SET lang=? WHERE user_id=?", (lang, user_id))
         await db.commit()
@@ -1023,7 +1023,7 @@ def price_kb(lang: str) -> InlineKeyboardMarkup:
 def gifts_by_price_kb(lang: str, price: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for g in GIFTS_BY_PRICE.get(price, []):
-        kb.button(text=f"{g.label} » {g.id}", callback_data=f"gift:{g.id}")
+        kb.button(text=f"{g.label}", callback_data=f"gift:{g.id}")
     kb.button(text=t(lang, "back_prices"), callback_data="menu:gift")
     kb.adjust(1)
     return kb.as_markup()
@@ -1060,7 +1060,7 @@ async def render_status_text_and_kb(user_id: int) -> Tuple[str, InlineKeyboardMa
     gift_txt = t(lang, "gift_none")
     if sel_gift_id and sel_gift_id in GIFTS_BY_ID:
         g = GIFTS_BY_ID[sel_gift_id]
-        gift_txt = f"{g.label} (⭐{g.stars}) — {g.id}"
+        gift_txt = f"{g.label} (⭐{g.stars})"
 
     comment_txt = comment if comment else t(lang, "comment_empty")
     mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
@@ -1381,7 +1381,7 @@ async def choose_gift(c: CallbackQuery):
 
     await safe_edit_message_obj(
         c.message,
-        text=t(lang, "gift_selected", label=g.label, stars=g.stars, gid=g.id),
+        text=t(lang, "gift_selected", label=g.label, stars=g.stars),
         reply_markup=main_menu_kb(lang, anonymous)
     )
 
