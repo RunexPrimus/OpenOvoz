@@ -1,21 +1,20 @@
 import os
+import json
+import time
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple, Union
+from contextlib import asynccontextmanager
 
-import aiohttp
 import aiosqlite
+import aiohttp
+from aiohttp import web
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-)
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -31,16 +30,17 @@ from telethon.errors import RPCError
 # Logging
 # =========================
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 log = logging.getLogger("giftbot")
 
 
 # =========================
-# ENV
+# Env
 # =========================
 load_dotenv()
+
 
 def env_required(name: str) -> str:
     v = os.getenv(name)
@@ -48,35 +48,345 @@ def env_required(name: str) -> str:
         raise RuntimeError(f"Missing required env var: {name}")
     return v
 
-BOT_TOKEN = env_required("BOT_TOKEN")
 
+BOT_TOKEN = env_required("BOT_TOKEN")
 TG_API_ID = int(env_required("TG_API_ID"))
 TG_API_HASH = env_required("TG_API_HASH")
-RELAYER_SESSION = env_required("RELAYER_SESSION")  # Telethon StringSession
+RELAYER_SESSION = env_required("RELAYER_SESSION")
 
-CRYPTOPAY_TOKEN = env_required("CRYPTOPAY_TOKEN")  # from @CryptoBot -> /pay -> Crypto Pay -> My Apps
-# Pricing (you control this)
-PRICE_PER_STAR = float(os.getenv("PRICE_PER_STAR", "0.01"))  # in FIAT (USD/UZS/etc) or in crypto amount if you use currency_type=crypto
-PRICE_MIN = float(os.getenv("PRICE_MIN", "0.01"))
+CRYPTOPAY_TOKEN = env_required("CRYPTOPAY_TOKEN")
+CRYPTOPAY_BASE_URL = os.getenv("CRYPTOPAY_BASE_URL", "https://pay.crypt.bot").rstrip("/")
 
-# Crypto Pay invoice currency settings:
-# If currency_type=fiat: set CP_FIAT like USD/UZS and optional CP_ACCEPTED_ASSETS (comma)
-# If currency_type=crypto: set CP_ASSET like USDT
-CP_CURRENCY_TYPE = os.getenv("CP_CURRENCY_TYPE", "fiat").lower()  # "fiat" or "crypto"
-CP_FIAT = os.getenv("CP_FIAT", "USD").upper()
-CP_ASSET = os.getenv("CP_ASSET", "USDT").upper()
-CP_ACCEPTED_ASSETS = [x.strip().upper() for x in os.getenv("CP_ACCEPTED_ASSETS", "USDT").split(",") if x.strip()]
+# Pricing (your business logic)
+PRICE_PER_STAR = float(os.getenv("PRICE_PER_STAR", "0.02"))
+PRICE_MIN = float(os.getenv("PRICE_MIN", "0.10"))
 
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0") or "0")
+# CryptoBot Invoice config
+CURRENCY_TYPE = os.getenv("CRYPTOPAY_CURRENCY_TYPE", "crypto").lower().strip()  # "crypto" | "fiat"
+PAY_ASSET = os.getenv("CRYPTOPAY_ASSET", "USDT").upper().strip()
+PAY_FIAT = os.getenv("CRYPTOPAY_FIAT", "USD").upper().strip()
+ACCEPTED_ASSETS = os.getenv("CRYPTOPAY_ACCEPTED_ASSETS", "USDT,TON").upper().strip()
+
+INVOICE_EXPIRES_IN = int(os.getenv("INVOICE_EXPIRES_IN", "1800"))
+INVOICE_POLL_INTERVAL = float(os.getenv("INVOICE_POLL_INTERVAL", "10"))
+
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
-INVOICE_POLL_INTERVAL = float(os.getenv("INVOICE_POLL_INTERVAL", "5"))
-INVOICE_POLL_BATCH = int(os.getenv("INVOICE_POLL_BATCH", "25"))
+PORT = int(os.getenv("PORT", "8080"))
+WEB_BIND = os.getenv("WEB_BIND", "0.0.0.0")
+
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip()  # optional for paid button
 
 
 # =========================
-# Gift Catalog (static)
+# i18n
+# =========================
+LANGS = ("uz", "ru", "en")
+
+T = {
+    "uz": {
+        "menu_recipient": "🎯 Qabul qiluvchi",
+        "menu_comment": "💬 Komment",
+        "menu_gift": "🎁 Sovg'a tanlash",
+        "menu_mode_anon": "🕵️ Anonim (hide name)",
+        "menu_mode_profile": "👤 Profil (show name)",
+        "menu_invoice": "💳 CryptoBot Invoice",
+        "menu_lang": "🌐 Til",
+        "back_menu": "⬅️ Menu",
+        "back_prices": "⬅️ Narxlar",
+
+        "status_title": "📌 Hozirgi sozlamalar:",
+        "status_target": "🎯 Qabul qiluvchi: {target}",
+        "status_comment": "💬 Komment: {comment}",
+        "status_gift": "🎁 Sovg‘a: {gift}",
+        "status_mode": "🔒 Rejim: {mode}",
+        "status_choose": "\nQuyidan tanlang:",
+
+        "mode_anon": "🕵️ Anonim (hide name)",
+        "mode_profile": "👤 Profil (show name)",
+        "comment_empty": "(yo‘q)",
+        "gift_none": "Tanlanmagan",
+
+        "prompt_target": (
+            "🎯 Qabul qiluvchini yuboring:\n"
+            "- `me` (siz)\n"
+            "- `@username`\n"
+            "- `user_id` (raqam)\n\n"
+            "✅ Eng ishonchlisi: @username\n"
+            "⚠️ user_id ba’zan ishlamasligi mumkin."
+        ),
+        "prompt_comment": (
+            "💬 Komment yuboring (ixtiyoriy).\n"
+            "O‘chirish uchun: `-` yuboring.\n"
+            "Masalan: `Congrats 🎁` yoki `:)`"
+        ),
+        "pick_price": "🎁 Sovg‘a narxini tanlang:",
+        "pick_by_price": "⭐ {price} bo‘yicha sovg‘a tanlang:",
+        "gift_selected": "✅ Sovg‘a tanlandi:\n{label} (⭐{stars})\nID: {gid}\n\nEndi: 💳 Invoice yarating.",
+
+        "saved_target": "✅ Qabul qiluvchi saqlandi.\n\n{status}",
+        "saved_comment": "✅ Komment saqlandi.\n\n{status}",
+        "deleted_comment": "✅ Komment o‘chirildi.\n\n{status}",
+
+        "need_gift_first": "❌ Avval sovg‘ani tanlang.\n\n{status}",
+
+        "invoice_creating": (
+            "⏳ Invoice yaratilmoqda...\n"
+            "🧾 Buyurtma: #{order}\n"
+            "🎁 Gift: {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "🔒 Rejim: {mode}\n"
+            "💬 Comment: {comment}\n"
+            "💵 To‘lov: {amount} {cur}"
+        ),
+        "invoice_ready": (
+            "✅ Invoice tayyor!\n\n"
+            "🧾 Buyurtma: #{order}\n"
+            "🎁 Gift: {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "💵 To‘lov: {amount} {cur}\n\n"
+            "To‘lang, bot o‘zi tekshiradi va sovg‘ani yuboradi."
+        ),
+        "invoice_open": "💳 Invoice ochish",
+        "invoice_check": "🔄 Tekshirish",
+
+        "check_not_found": "❌ Invoice topilmadi (API).",
+        "check_forbidden": "❌ Buyurtma topilmadi yoki ruxsat yo‘q.",
+        "check_no_invoice": "❌ Invoice yo‘q.",
+        "check_expired": "⌛ Invoice muddati tugagan (expired).",
+        "check_status": "🧾 Buyurtma: #{order}\n📌 Invoice status: {status}\n\nTo‘lagan bo‘lsangiz, 5-10 soniyada yangilanadi.",
+
+        "paid_sending": "✅ Invoice PAID ✅\n🎁 Sovg‘a avtomatik yuborilmoqda...",
+        "already_sent": "✅ Bu buyurtma allaqachon yakunlangan.\n🎁 Sovg‘a yuborilgan.",
+        "already_sending": "⏳ Sovg‘a yuborilmoqda, biroz kuting.",
+
+        "delivery_sent_dm": (
+            "✅ Sovg‘a yuborildi!\n"
+            "🧾 Buyurtma: #{order}\n"
+            "🎁 {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "🔒 Rejim: {mode}\n"
+            "{comment_line}"
+            "{comment_warn}"
+        ),
+        "comment_line": "💬 Comment: {comment}\n",
+        "comment_warn": "⚠️ Komment qabul qilinmadi (fallback comment-siz yuborildi).\n",
+
+        "delivery_failed_dm": "❌ Sovg‘ani yuborib bo‘lmadi.\n🧾 Buyurtma: #{order}\nXatolik: {err}",
+        "toggle_anon_on": "✅ Anonim yoqildi (hide name)",
+        "toggle_anon_off": "✅ Profil ko‘rinadi (show name)",
+
+        "lang_pick": "🌐 Tilni tanlang:",
+        "lang_set": "✅ Til saqlandi.",
+    },
+
+    "ru": {
+        "menu_recipient": "🎯 Получатель",
+        "menu_comment": "💬 Комментарий",
+        "menu_gift": "🎁 Выбор подарка",
+        "menu_mode_anon": "🕵️ Анонимно (hide name)",
+        "menu_mode_profile": "👤 Профиль (show name)",
+        "menu_invoice": "💳 CryptoBot Invoice",
+        "menu_lang": "🌐 Язык",
+        "back_menu": "⬅️ Меню",
+        "back_prices": "⬅️ Цены",
+
+        "status_title": "📌 Текущие настройки:",
+        "status_target": "🎯 Получатель: {target}",
+        "status_comment": "💬 Комментарий: {comment}",
+        "status_gift": "🎁 Подарок: {gift}",
+        "status_mode": "🔒 Режим: {mode}",
+        "status_choose": "\nВыберите действие:",
+
+        "mode_anon": "🕵️ Анонимно (hide name)",
+        "mode_profile": "👤 Профиль (show name)",
+        "comment_empty": "(нет)",
+        "gift_none": "Не выбран",
+
+        "prompt_target": (
+            "🎯 Отправьте получателя:\n"
+            "- `me` (вы)\n"
+            "- `@username`\n"
+            "- `user_id` (цифры)\n\n"
+            "✅ Самый надежный: @username\n"
+            "⚠️ user_id иногда не работает."
+        ),
+        "prompt_comment": (
+            "💬 Отправьте комментарий (необязательно).\n"
+            "Чтобы удалить: отправьте `-`.\n"
+            "Напр.: `Congrats 🎁` или `:)`"
+        ),
+        "pick_price": "🎁 Выберите цену подарка:",
+        "pick_by_price": "⭐ Подарки за {price}:",
+        "gift_selected": "✅ Подарок выбран:\n{label} (⭐{stars})\nID: {gid}\n\nДалее: 💳 Создайте invoice.",
+
+        "saved_target": "✅ Получатель сохранен.\n\n{status}",
+        "saved_comment": "✅ Комментарий сохранен.\n\n{status}",
+        "deleted_comment": "✅ Комментарий удален.\n\n{status}",
+
+        "need_gift_first": "❌ Сначала выберите подарок.\n\n{status}",
+
+        "invoice_creating": (
+            "⏳ Создаю invoice...\n"
+            "🧾 Заказ: #{order}\n"
+            "🎁 Gift: {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "🔒 Режим: {mode}\n"
+            "💬 Comment: {comment}\n"
+            "💵 Оплата: {amount} {cur}"
+        ),
+        "invoice_ready": (
+            "✅ Invoice готов!\n\n"
+            "🧾 Заказ: #{order}\n"
+            "🎁 Gift: {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "💵 Оплата: {amount} {cur}\n\n"
+            "Оплатите — бот сам проверит и отправит подарок."
+        ),
+        "invoice_open": "💳 Открыть invoice",
+        "invoice_check": "🔄 Проверить",
+
+        "check_not_found": "❌ Invoice не найден (API).",
+        "check_forbidden": "❌ Заказ не найден или нет доступа.",
+        "check_no_invoice": "❌ Нет invoice.",
+        "check_expired": "⌛ Invoice просрочен (expired).",
+        "check_status": "🧾 Заказ: #{order}\n📌 Статус invoice: {status}\n\nЕсли оплатили — обновится через 5-10 секунд.",
+
+        "paid_sending": "✅ Invoice PAID ✅\n🎁 Подарок отправляется автоматически...",
+        "already_sent": "✅ Этот заказ уже выполнен.\n🎁 Подарок отправлен.",
+        "already_sending": "⏳ Подарок отправляется, подождите.",
+
+        "delivery_sent_dm": (
+            "✅ Подарок отправлен!\n"
+            "🧾 Заказ: #{order}\n"
+            "🎁 {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "🔒 Режим: {mode}\n"
+            "{comment_line}"
+            "{comment_warn}"
+        ),
+        "comment_line": "💬 Comment: {comment}\n",
+        "comment_warn": "⚠️ Комментарий не применился (fallback без комментария).\n",
+
+        "delivery_failed_dm": "❌ Не удалось отправить подарок.\n🧾 Заказ: #{order}\nОшибка: {err}",
+        "toggle_anon_on": "✅ Анонимный режим включен (hide name)",
+        "toggle_anon_off": "✅ Профиль виден (show name)",
+
+        "lang_pick": "🌐 Выберите язык:",
+        "lang_set": "✅ Язык сохранен.",
+    },
+
+    "en": {
+        "menu_recipient": "🎯 Recipient",
+        "menu_comment": "💬 Comment",
+        "menu_gift": "🎁 Choose gift",
+        "menu_mode_anon": "🕵️ Anonymous (hide name)",
+        "menu_mode_profile": "👤 Profile (show name)",
+        "menu_invoice": "💳 CryptoBot Invoice",
+        "menu_lang": "🌐 Language",
+        "back_menu": "⬅️ Menu",
+        "back_prices": "⬅️ Prices",
+
+        "status_title": "📌 Current settings:",
+        "status_target": "🎯 Recipient: {target}",
+        "status_comment": "💬 Comment: {comment}",
+        "status_gift": "🎁 Gift: {gift}",
+        "status_mode": "🔒 Mode: {mode}",
+        "status_choose": "\nChoose:",
+
+        "mode_anon": "🕵️ Anonymous (hide name)",
+        "mode_profile": "👤 Profile (show name)",
+        "comment_empty": "(none)",
+        "gift_none": "Not selected",
+
+        "prompt_target": (
+            "🎯 Send recipient:\n"
+            "- `me` (you)\n"
+            "- `@username`\n"
+            "- `user_id` (digits)\n\n"
+            "✅ Best: @username\n"
+            "⚠️ user_id may not work sometimes."
+        ),
+        "prompt_comment": (
+            "💬 Send a comment (optional).\n"
+            "To delete: send `-`.\n"
+            "E.g.: `Congrats 🎁` or `:)`"
+        ),
+        "pick_price": "🎁 Choose price:",
+        "pick_by_price": "⭐ Gifts for {price}:",
+        "gift_selected": "✅ Gift selected:\n{label} (⭐{stars})\nID: {gid}\n\nNext: create invoice.",
+
+        "saved_target": "✅ Recipient saved.\n\n{status}",
+        "saved_comment": "✅ Comment saved.\n\n{status}",
+        "deleted_comment": "✅ Comment removed.\n\n{status}",
+
+        "need_gift_first": "❌ Choose a gift first.\n\n{status}",
+
+        "invoice_creating": (
+            "⏳ Creating invoice...\n"
+            "🧾 Order: #{order}\n"
+            "🎁 Gift: {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "🔒 Mode: {mode}\n"
+            "💬 Comment: {comment}\n"
+            "💵 Pay: {amount} {cur}"
+        ),
+        "invoice_ready": (
+            "✅ Invoice ready!\n\n"
+            "🧾 Order: #{order}\n"
+            "🎁 Gift: {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "💵 Pay: {amount} {cur}\n\n"
+            "Pay it — bot will auto-check and send the gift."
+        ),
+        "invoice_open": "💳 Open invoice",
+        "invoice_check": "🔄 Check",
+
+        "check_not_found": "❌ Invoice not found (API).",
+        "check_forbidden": "❌ Order not found or no access.",
+        "check_no_invoice": "❌ No invoice.",
+        "check_expired": "⌛ Invoice expired.",
+        "check_status": "🧾 Order: #{order}\n📌 Invoice status: {status}\n\nIf paid, it updates in 5–10 seconds.",
+
+        "paid_sending": "✅ Invoice PAID ✅\n🎁 Gift is being sent automatically...",
+        "already_sent": "✅ This order is completed.\n🎁 Gift already sent.",
+        "already_sending": "⏳ Gift is being sent, please wait.",
+
+        "delivery_sent_dm": (
+            "✅ Gift sent!\n"
+            "🧾 Order: #{order}\n"
+            "🎁 {gift} (⭐{stars})\n"
+            "🎯 Target: {target}\n"
+            "🔒 Mode: {mode}\n"
+            "{comment_line}"
+            "{comment_warn}"
+        ),
+        "comment_line": "💬 Comment: {comment}\n",
+        "comment_warn": "⚠️ Comment was rejected (fallback sent without comment).\n",
+
+        "delivery_failed_dm": "❌ Failed to send gift.\n🧾 Order: #{order}\nError: {err}",
+        "toggle_anon_on": "✅ Anonymous enabled (hide name)",
+        "toggle_anon_off": "✅ Profile visible (show name)",
+
+        "lang_pick": "🌐 Choose language:",
+        "lang_set": "✅ Language saved.",
+    },
+}
+
+
+def t(lang: str, key: str, **kw) -> str:
+    lang = lang if lang in T else "uz"
+    s = T[lang].get(key) or T["uz"].get(key) or key
+    try:
+        return s.format(**kw)
+    except Exception:
+        return s
+
+
+# =========================
+# Gifts
 # =========================
 @dataclass(frozen=True)
 class GiftItem:
@@ -84,20 +394,21 @@ class GiftItem:
     stars: int
     label: str
 
+
 GIFT_CATALOG: List[GiftItem] = [
-    GiftItem(6028601630662853006, 50,  "🍾 50★"),
+    GiftItem(6028601630662853006, 50, "🍾 50★"),
     GiftItem(5170521118301225164, 100, "💎 100★"),
     GiftItem(5170690322832818290, 100, "💍 100★"),
     GiftItem(5168043875654172773, 100, "🏆 100★"),
-    GiftItem(5170564780938756245, 50,  "🚀 50★"),
-    GiftItem(5170314324215857265, 50,  "💐 50★"),
-    GiftItem(5170144170496491616, 50,  "🎂 50★"),
-    GiftItem(5168103777563050263, 25,  "🌹 25★"),
-    GiftItem(5170250947678437525, 25,  "🎁 25★"),
-    GiftItem(5170233102089322756, 15,  "🧸 15★"),
-    GiftItem(5170145012310081615, 15,  "💝 15★"),
-    GiftItem(5922558454332916696, 50,  "🎄 50★"),
-    GiftItem(5956217000635139069, 50,  "🧸(hat) 50★"),
+    GiftItem(5170564780938756245, 50, "🚀 50★"),
+    GiftItem(5170314324215857265, 50, "💐 50★"),
+    GiftItem(5170144170496491616, 50, "🎂 50★"),
+    GiftItem(5168103777563050263, 25, "🌹 25★"),
+    GiftItem(5170250947678437525, 25, "🎁 25★"),
+    GiftItem(5170233102089322756, 15, "🧸 15★"),
+    GiftItem(5170145012310081615, 15, "💝 15★"),
+    GiftItem(5922558454332916696, 50, "🎄 50★"),
+    GiftItem(5956217000635139069, 50, "🧸(hat) 50★"),
 ]
 
 GIFTS_BY_PRICE: Dict[int, List[GiftItem]] = {}
@@ -105,390 +416,402 @@ GIFTS_BY_ID: Dict[int, GiftItem] = {}
 for g in GIFT_CATALOG:
     GIFTS_BY_PRICE.setdefault(g.stars, []).append(g)
     GIFTS_BY_ID[g.id] = g
+
 ALLOWED_PRICES = sorted(GIFTS_BY_PRICE.keys())
 
 
 # =========================
-# i18n (EN/RU)
+# DB (aiosqlite safe + migrations)
 # =========================
-T: Dict[str, Dict[str, str]] = {
-    "en": {
-        "menu_title": "📌 Current settings:",
-        "target": "🎯 Receiver",
-        "comment": "💬 Comment",
-        "gift": "🎁 Gift",
-        "mode": "🔒 Mode",
-        "lang": "🌐 Language",
-        "send": "💳 Pay",
-        "back_menu": "⬅️ Menu",
-        "back_prices": "⬅️ Prices",
-        "confirm_pay": "✅ Create invoice",
-        "check": "🔎 Check payment",
-        "paid": "✅ Invoice PAID ✅\n🎁 Gift is being sent automatically...",
-        "not_paid": "⏳ Not paid yet. Try again later.",
-        "already_delivered": "✅ Already delivered. No duplicates.",
-        "order_failed": "❌ Delivery failed.",
-        "ask_target": "🎯 Send receiver:\n- `me`\n- `@username`\n- `user_id` (digits)\n\n⚠️ If user_id doesn't resolve: use @username or receiver must message relayer once.",
-        "ask_comment": "💬 Send comment (optional).\nSend `-` to clear.",
-        "pick_price": "🎁 Choose price:",
-        "pick_gift": "⭐ Choose a gift for {price}:",
-        "gift_selected": "✅ Gift selected:\n{label} (⭐{stars})\nID: {gid}\n\nNow create invoice.",
-        "mode_show": "👤 Show name (in profile)",
-        "mode_hide": "🕵️ Hide name (in profile)",
-        "mode_hint": "Note: hiding name only affects profile display. Receiver still sees who sent it.",
-        "lang_en": "English",
-        "lang_ru": "Русский",
-        "saved": "✅ Saved.",
-        "comment_cleared": "✅ Comment cleared.",
-        "invoice_text": "🧾 Order #{oid}\n🎁 {gift}\n🎯 {target}\n🔒 {mode}\n💬 {comment}\n\n💳 Pay: {pay_url}\n\nAfter payment the gift will be sent automatically.",
-        "starting": "✅ Bot started.",
-        "need_gift": "❌ Select a gift first.",
-        "telethon_missing": "❌ Your Telethon build doesn't include StarGift TL objects.\nInstall correct Telethon (see requirements.txt).",
-        "err": "❌ Error: {e}",
-    },
-    "ru": {
-        "menu_title": "📌 Текущие настройки:",
-        "target": "🎯 Получатель",
-        "comment": "💬 Комментарий",
-        "gift": "🎁 Подарок",
-        "mode": "🔒 Режим",
-        "lang": "🌐 Язык",
-        "send": "💳 Оплатить",
-        "back_menu": "⬅️ Меню",
-        "back_prices": "⬅️ Цены",
-        "confirm_pay": "✅ Создать инвойс",
-        "check": "🔎 Проверить оплату",
-        "paid": "✅ Инвойс ОПЛАЧЕН ✅\n🎁 Подарок отправляется автоматически...",
-        "not_paid": "⏳ Не оплачено. Попробуйте позже.",
-        "already_delivered": "✅ Уже доставлено. Дубликатов не будет.",
-        "order_failed": "❌ Ошибка доставки.",
-        "ask_target": "🎯 Отправьте получателя:\n- `me`\n- `@username`\n- `user_id` (цифры)\n\n⚠️ Если user_id не резолвится: используйте @username или получатель должен написать relayer 1 раз.",
-        "ask_comment": "💬 Отправьте комментарий (необязательно).\nОтправьте `-` чтобы очистить.",
-        "pick_price": "🎁 Выберите цену:",
-        "pick_gift": "⭐ Выберите подарок за {price}:",
-        "gift_selected": "✅ Подарок выбран:\n{label} (⭐{stars})\nID: {gid}\n\nТеперь создайте инвойс.",
-        "mode_show": "👤 Имя видно (в профиле)",
-        "mode_hide": "🕵️ Скрыть имя (в профиле)",
-        "mode_hint": "Важно: скрытие имени влияет только на отображение в профиле. Получатель всё равно видит отправителя.",
-        "lang_en": "English",
-        "lang_ru": "Русский",
-        "saved": "✅ Сохранено.",
-        "comment_cleared": "✅ Комментарий очищен.",
-        "invoice_text": "🧾 Заказ #{oid}\n🎁 {gift}\n🎯 {target}\n🔒 {mode}\n💬 {comment}\n\n💳 Оплата: {pay_url}\n\nПосле оплаты подарок отправится автоматически.",
-        "starting": "✅ Бот запущен.",
-        "need_gift": "❌ Сначала выберите подарок.",
-        "telethon_missing": "❌ В вашей версии Telethon нет StarGift TL-объектов.\nУстановите правильный Telethon (см. requirements.txt).",
-        "err": "❌ Ошибка: {e}",
-    },
-}
-
-def tr(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in T else "ru"
-    s = T[lang].get(key, key)
-    if kwargs:
-        try:
-            return s.format(**kwargs)
-        except Exception:
-            return s
-    return s
-
-
-# =========================
-# DB
-# =========================
-_db_lock = asyncio.Lock()
-
-async def db_init() -> None:
+@asynccontextmanager
+async def db_connect():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA synchronous=NORMAL;")
+        await db.execute("PRAGMA foreign_keys=ON;")
         await db.execute("PRAGMA busy_timeout=5000;")
+        yield db
 
+
+async def _table_info(db: aiosqlite.Connection, table: str) -> List[str]:
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cur.fetchall()
+    return [r[1] for r in rows]  # name column
+
+
+async def _add_column_if_missing(db: aiosqlite.Connection, table: str, col_name: str, col_def_sql: str):
+    cols = await _table_info(db, table)
+    if col_name in cols:
+        return
+    await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def_sql}")
+
+
+async def db_init():
+    async with db_connect() as db:
+        # create tables if not exist
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS user_settings (
             user_id INTEGER PRIMARY KEY,
-            lang TEXT DEFAULT 'ru',
-            target TEXT DEFAULT 'me',
+            target TEXT DEFAULT NULL,
             comment TEXT DEFAULT NULL,
             selected_gift_id INTEGER DEFAULT NULL,
-            hide_name INTEGER DEFAULT 0
-        )
+            anonymous INTEGER DEFAULT 0,
+            lang TEXT DEFAULT 'uz'
+        );
         """)
-
         await db.execute("""
         CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             target TEXT NOT NULL,
             gift_id INTEGER NOT NULL,
             stars INTEGER NOT NULL,
             comment TEXT DEFAULT NULL,
-            hide_name INTEGER DEFAULT 0,
+            anonymous INTEGER NOT NULL DEFAULT 0,
 
-            invoice_id INTEGER DEFAULT NULL,
-            pay_url TEXT DEFAULT NULL,
-            amount TEXT DEFAULT NULL,
-            currency_type TEXT DEFAULT NULL,
-            asset TEXT DEFAULT NULL,
-            fiat TEXT DEFAULT NULL,
+            price_amount TEXT NOT NULL,
+            price_currency TEXT NOT NULL,
 
-            status TEXT NOT NULL DEFAULT 'created', -- created|paid|delivering|delivered|failed|cancelled
+            invoice_id INTEGER,
+            invoice_url TEXT,
+
+            origin_chat_id INTEGER,
+            origin_message_id INTEGER,
+
+            status TEXT NOT NULL DEFAULT 'creating', -- creating|active|paid|sending|sent|failed|expired
             error TEXT DEFAULT NULL,
 
-            msg_chat_id INTEGER DEFAULT NULL,
-            msg_message_id INTEGER DEFAULT NULL,
-
             created_at INTEGER NOT NULL,
-            paid_at INTEGER DEFAULT NULL,
-            delivered_at INTEGER DEFAULT NULL
-        )
+            updated_at INTEGER NOT NULL,
+            paid_at INTEGER,
+            sent_at INTEGER
+        );
         """)
+        # migrations for older DB
+        await _add_column_if_missing(db, "user_settings", "lang", "lang TEXT DEFAULT 'uz'")
+        await _add_column_if_missing(db, "orders", "origin_chat_id", "origin_chat_id INTEGER")
+        await _add_column_if_missing(db, "orders", "origin_message_id", "origin_message_id INTEGER")
+        await _add_column_if_missing(db, "orders", "paid_at", "paid_at INTEGER")
+        await _add_column_if_missing(db, "orders", "sent_at", "sent_at INTEGER")
 
         await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_invoice_id ON orders(invoice_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_invoice ON orders(invoice_id);")
         await db.commit()
 
 
-async def db_ensure_user(user_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (user_id,))
+async def db_ensure_user(user_id: int, default_target: Optional[str] = None):
+    async with db_connect() as db:
+        await db.execute("INSERT OR IGNORE INTO user_settings(user_id) VALUES(?)", (user_id,))
+        if default_target:
+            await db.execute(
+                "UPDATE user_settings SET target=COALESCE(target, ?) WHERE user_id=?",
+                (default_target, user_id),
+            )
         await db.commit()
 
 
-async def db_get_user(user_id: int) -> Tuple[str, str, Optional[str], Optional[int], int]:
-    async with aiosqlite.connect(DB_PATH) as db:
+async def db_get_settings(user_id: int) -> Tuple[str, Optional[str], Optional[int], int, str]:
+    async with db_connect() as db:
         cur = await db.execute(
-            "SELECT lang, target, comment, selected_gift_id, hide_name FROM users WHERE user_id=?",
+            "SELECT target, comment, selected_gift_id, anonymous, lang FROM user_settings WHERE user_id=?",
             (user_id,),
         )
         row = await cur.fetchone()
         if not row:
-            return ("ru", "me", None, None, 0)
-        return (row[0] or "ru", row[1] or "me", row[2], row[3], int(row[4] or 0))
+            return ("me", None, None, 0, "uz")
+        lang = (row[4] or "uz").lower()
+        if lang not in LANGS:
+            lang = "uz"
+        return (row[0] or "me", row[1], row[2], int(row[3] or 0), lang)
 
 
-async def db_set_lang(user_id: int, lang: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET lang=? WHERE user_id=?", (lang, user_id))
+async def db_set_lang(user_id: int, lang: str):
+    lang = (lang or "uz").lower()
+    if lang not in LANGS:
+        lang = "uz"
+    async with db_connect() as db:
+        await db.execute("UPDATE user_settings SET lang=? WHERE user_id=?", (lang, user_id))
         await db.commit()
 
 
-async def db_set_target(user_id: int, target: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET target=? WHERE user_id=?", (target, user_id))
+async def db_set_target(user_id: int, target: str):
+    async with db_connect() as db:
+        await db.execute("UPDATE user_settings SET target=? WHERE user_id=?", (target, user_id))
         await db.commit()
 
 
-async def db_set_comment(user_id: int, comment: Optional[str]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET comment=? WHERE user_id=?", (comment, user_id))
+async def db_set_comment(user_id: int, comment: Optional[str]):
+    async with db_connect() as db:
+        await db.execute("UPDATE user_settings SET comment=? WHERE user_id=?", (comment, user_id))
         await db.commit()
 
 
-async def db_set_selected_gift(user_id: int, gift_id: Optional[int]) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET selected_gift_id=? WHERE user_id=?", (gift_id, user_id))
+async def db_set_selected_gift(user_id: int, gift_id: Optional[int]):
+    async with db_connect() as db:
+        await db.execute("UPDATE user_settings SET selected_gift_id=? WHERE user_id=?", (gift_id, user_id))
         await db.commit()
 
 
-async def db_toggle_hide_name(user_id: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT hide_name FROM users WHERE user_id=?", (user_id,))
+async def db_toggle_anonymous(user_id: int) -> int:
+    async with db_connect() as db:
+        cur = await db.execute("SELECT anonymous FROM user_settings WHERE user_id=?", (user_id,))
         row = await cur.fetchone()
-        curv = int(row[0] or 0) if row else 0
-        newv = 0 if curv == 1 else 1
-        await db.execute("UPDATE users SET hide_name=? WHERE user_id=?", (newv, user_id))
+        current = int(row[0] or 0) if row else 0
+        new_val = 0 if current == 1 else 1
+        await db.execute("UPDATE user_settings SET anonymous=? WHERE user_id=?", (new_val, user_id))
         await db.commit()
-        return newv
+        return new_val
 
 
 async def db_create_order(
-    *,
     user_id: int,
     target: str,
     gift: GiftItem,
     comment: Optional[str],
-    hide_name: int,
+    anonymous: int,
+    price_amount: str,
+    price_currency: str,
 ) -> int:
     now = int(time.time())
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect() as db:
         cur = await db.execute("""
-        INSERT INTO orders(user_id, target, gift_id, stars, comment, hide_name, created_at, status)
-        VALUES(?,?,?,?,?,?,?, 'created')
-        """, (user_id, target, gift.id, gift.stars, comment, hide_name, now))
+            INSERT INTO orders(
+                user_id, target, gift_id, stars, comment, anonymous,
+                price_amount, price_currency,
+                status, created_at, updated_at
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            user_id, target, gift.id, gift.stars, comment, anonymous,
+            price_amount, price_currency,
+            "creating", now, now
+        ))
         await db.commit()
         return int(cur.lastrowid)
 
 
-async def db_attach_invoice(
-    order_id: int,
-    *,
-    invoice_id: int,
-    pay_url: str,
-    amount: str,
-    currency_type: str,
-    asset: Optional[str],
-    fiat: Optional[str],
-    msg_chat_id: int,
-    msg_message_id: int,
-) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+async def db_attach_invoice(order_id: int, invoice_id: int, invoice_url: str):
+    now = int(time.time())
+    async with db_connect() as db:
         await db.execute("""
-        UPDATE orders
-        SET invoice_id=?, pay_url=?, amount=?, currency_type=?, asset=?, fiat=?,
-            msg_chat_id=?, msg_message_id=?
-        WHERE id=?
-        """, (invoice_id, pay_url, amount, currency_type, asset, fiat, msg_chat_id, msg_message_id, order_id))
+            UPDATE orders
+            SET invoice_id=?, invoice_url=?, status='active', updated_at=?, error=NULL
+            WHERE order_id=?
+        """, (invoice_id, invoice_url, now, order_id))
         await db.commit()
 
 
-async def db_get_order(order_id: int) -> Optional[Dict[str, Any]]:
-    async with aiosqlite.connect(DB_PATH) as db:
+async def db_set_order_origin_message(order_id: int, chat_id: int, message_id: int):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+            UPDATE orders
+            SET origin_chat_id=?, origin_message_id=?, updated_at=?
+            WHERE order_id=?
+        """, (chat_id, message_id, now, order_id))
+        await db.commit()
+
+
+async def db_get_order(order_id: int) -> Optional[dict]:
+    async with db_connect() as db:
         cur = await db.execute("""
-        SELECT id, user_id, target, gift_id, stars, comment, hide_name,
-               invoice_id, pay_url, amount, currency_type, asset, fiat,
-               status, error, msg_chat_id, msg_message_id, created_at, paid_at, delivered_at
-        FROM orders WHERE id=?
+            SELECT order_id, user_id, target, gift_id, stars, comment, anonymous,
+                   price_amount, price_currency, invoice_id, invoice_url,
+                   origin_chat_id, origin_message_id,
+                   status, error, created_at, updated_at, paid_at, sent_at
+            FROM orders
+            WHERE order_id=?
         """, (order_id,))
         r = await cur.fetchone()
         if not r:
             return None
-        keys = [
-            "id","user_id","target","gift_id","stars","comment","hide_name",
-            "invoice_id","pay_url","amount","currency_type","asset","fiat",
-            "status","error","msg_chat_id","msg_message_id","created_at","paid_at","delivered_at"
-        ]
-        return dict(zip(keys, r))
+        return {
+            "order_id": r[0],
+            "user_id": r[1],
+            "target": r[2],
+            "gift_id": r[3],
+            "stars": r[4],
+            "comment": r[5],
+            "anonymous": r[6],
+            "price_amount": r[7],
+            "price_currency": r[8],
+            "invoice_id": r[9],
+            "invoice_url": r[10],
+            "origin_chat_id": r[11],
+            "origin_message_id": r[12],
+            "status": r[13],
+            "error": r[14],
+            "created_at": r[15],
+            "updated_at": r[16],
+            "paid_at": r[17],
+            "sent_at": r[18],
+        }
 
 
-async def db_list_pending_orders(limit: int) -> List[Dict[str, Any]]:
-    async with aiosqlite.connect(DB_PATH) as db:
+async def db_list_active_invoice_orders(limit: int = 200) -> List[dict]:
+    """
+    Only orders that still need invoice polling.
+    IMPORTANT: do NOT include 'sent' orders here.
+    """
+    async with db_connect() as db:
         cur = await db.execute("""
-        SELECT id, invoice_id FROM orders
-        WHERE status='created' AND invoice_id IS NOT NULL
-        ORDER BY id ASC
-        LIMIT ?
+            SELECT order_id, user_id, invoice_id
+            FROM orders
+            WHERE status IN ('active','creating') AND invoice_id IS NOT NULL
+            ORDER BY created_at ASC
+            LIMIT ?
         """, (limit,))
         rows = await cur.fetchall()
-        return [{"id": int(a), "invoice_id": int(b)} for (a, b) in rows if b is not None]
+        return [{"order_id": r[0], "user_id": r[1], "invoice_id": r[2]} for r in rows]
 
 
-async def db_mark_paid(order_id: int) -> bool:
+async def db_mark_paid_if_needed(order_id: int) -> bool:
+    """
+    Mark paid ONLY if current status is 'active' or 'creating'.
+    Never revert from 'sent' back to 'paid'.
+    Returns True if changed to paid.
+    """
     now = int(time.time())
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect() as db:
         cur = await db.execute("""
-        UPDATE orders
-        SET status='paid', paid_at=?
-        WHERE id=? AND status='created'
+            UPDATE orders
+            SET status='paid', paid_at=?, updated_at=?, error=NULL
+            WHERE order_id=? AND status IN ('active','creating')
+        """, (now, now, order_id))
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def db_mark_expired_if_needed(order_id: int) -> bool:
+    now = int(time.time())
+    async with db_connect() as db:
+        cur = await db.execute("""
+            UPDATE orders
+            SET status='expired', updated_at=?, error='Invoice expired'
+            WHERE order_id=? AND status IN ('active','creating')
         """, (now, order_id))
         await db.commit()
         return cur.rowcount == 1
 
 
-async def db_claim_delivery(order_id: int) -> bool:
-    # one-shot claim to avoid double delivery (manual check + watcher)
-    async with aiosqlite.connect(DB_PATH) as db:
+async def db_claim_sending(order_id: int) -> bool:
+    """
+    Atomic claim: only one worker can move paid -> sending.
+    Returns True if successfully claimed.
+    """
+    now = int(time.time())
+    async with db_connect() as db:
         cur = await db.execute("""
-        UPDATE orders
-        SET status='delivering'
-        WHERE id=? AND status='paid'
-        """, (order_id,))
+            UPDATE orders
+            SET status='sending', updated_at=?
+            WHERE order_id=? AND status='paid'
+        """, (now, order_id))
         await db.commit()
         return cur.rowcount == 1
 
 
-async def db_mark_delivered(order_id: int) -> None:
+async def db_mark_sent(order_id: int):
     now = int(time.time())
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect() as db:
         await db.execute("""
-        UPDATE orders
-        SET status='delivered', delivered_at=?, error=NULL
-        WHERE id=?
-        """, (now, order_id))
+            UPDATE orders
+            SET status='sent', sent_at=?, updated_at=?, error=NULL
+            WHERE order_id=?
+        """, (now, now, order_id))
         await db.commit()
 
 
-async def db_mark_failed(order_id: int, error: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+async def db_mark_failed(order_id: int, error: str):
+    now = int(time.time())
+    async with db_connect() as db:
         await db.execute("""
-        UPDATE orders
-        SET status='failed', error=?
-        WHERE id=?
-        """, (error[:400], order_id))
+            UPDATE orders
+            SET status='failed', updated_at=?, error=?
+            WHERE order_id=?
+        """, (now, error, order_id))
         await db.commit()
 
 
 # =========================
-# Crypto Pay API client (@CryptoBot)  https://help.crypt.bot/crypto-pay-api
+# Crypto Pay API
 # =========================
-class CryptoPay:
-    BASE = "https://pay.crypt.bot/api/"
-
-    def __init__(self, token: str):
+class CryptoPayAPI:
+    def __init__(self, token: str, base_url: str):
         self.token = token
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._lock = asyncio.Lock()
+        self.base_url = base_url
+        self.session: Optional[aiohttp.ClientSession] = None
 
     async def start(self):
-        if not self._session:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=20)
-            )
+        if self.session:
+            return
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
 
     async def stop(self):
-        if self._session:
-            await self._session.close()
-            self._session = None
+        if self.session:
+            await self.session.close()
+            self.session = None
 
-    async def _post(self, method: str, data: Dict[str, Any]) -> Any:
-        if not self._session:
-            raise RuntimeError("CryptoPay session not started")
-        url = self.BASE + method
-        headers = {"Crypto-Pay-API-Token": self.token}
-        async with self._lock:
-            async with self._session.post(url, json=data, headers=headers) as resp:
-                js = await resp.json(content_type=None)
-                if not js or not js.get("ok"):
-                    raise RuntimeError(f"CryptoPay {method} failed: {js}")
-                return js["result"]
+    async def _post(self, method_name: str, params: Optional[dict] = None) -> dict:
+        if not self.session:
+            raise RuntimeError("CryptoPayAPI not started")
+        url = f"{self.base_url}/api/{method_name}"
+        headers = {
+            "Crypto-Pay-API-Token": self.token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        async with self.session.post(url, headers=headers, json=(params or {})) as resp:
+            data = await resp.json(content_type=None)
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                raise RuntimeError(f"CryptoPay API error ({method_name}): {data}")
+            return data["result"]
+
+    async def get_me(self) -> dict:
+        return await self._post("getMe")
 
     async def create_invoice(
         self,
         *,
-        amount: float,
         description: str,
         payload: str,
-    ) -> Dict[str, Any]:
-        # currency settings
-        data: Dict[str, Any] = {
-            "amount": float(f"{amount:.2f}"),
-            "description": description[:120],
-            "payload": payload,
-            "allow_anonymous": True,
+        amount: str,
+        currency_type: str,
+        asset: Optional[str] = None,
+        fiat: Optional[str] = None,
+        accepted_assets: Optional[str] = None,
+        expires_in: Optional[int] = None,
+        allow_comments: bool = False,
+        allow_anonymous: bool = True,
+        paid_btn_url: Optional[str] = None,
+    ) -> dict:
+        params: dict = {
+            "currency_type": currency_type,
+            "amount": amount,
+            "description": description[:1024],
+            "payload": payload[:4096],
+            "allow_comments": allow_comments,
+            "allow_anonymous": allow_anonymous,
         }
-        if CP_CURRENCY_TYPE == "fiat":
-            data["currency_type"] = "fiat"
-            data["fiat"] = CP_FIAT
-            if CP_ACCEPTED_ASSETS:
-                data["accepted_assets"] = CP_ACCEPTED_ASSETS
+        if expires_in:
+            params["expires_in"] = int(expires_in)
+
+        if paid_btn_url:
+            params["paid_btn_name"] = "openBot"
+            params["paid_btn_url"] = paid_btn_url
+
+        if currency_type == "crypto":
+            params["asset"] = asset
         else:
-            data["currency_type"] = "crypto"
-            data["asset"] = CP_ASSET
+            params["fiat"] = fiat
+            if accepted_assets:
+                params["accepted_assets"] = accepted_assets
 
-        return await self._post("createInvoice", data)
+        return await self._post("createInvoice", params)
 
-    async def get_invoices(self, invoice_ids: List[int]) -> List[Dict[str, Any]]:
-        # Crypto Pay: getInvoices supports invoice_ids param
-        # Some implementations accept comma string, safer to pass list.
-        res = await self._post("getInvoices", {"invoice_ids": invoice_ids})
-        if isinstance(res, dict) and "items" in res:
-            return res["items"] or []
-        if isinstance(res, list):
-            return res
-        return []
-
-
-cryptopay = CryptoPay(CRYPTOPAY_TOKEN)
+    async def get_invoices(self, *, invoice_ids: str) -> List[dict]:
+        result = await self._post("getInvoices", {"invoice_ids": invoice_ids, "count": 1000})
+        return result.get("items", [])
 
 
 # =========================
@@ -510,14 +833,8 @@ class Relayer:
     async def start(self):
         await self.client.connect()
         if not await self.client.is_user_authorized():
-            raise RuntimeError("RELAYER_SESSION invalid. Recreate session via QR.")
-        me = await self.client.get_me()
-
-        # Hard check: needed TL objects exist
-        if not hasattr(types, "InputInvoiceStarGift") or not hasattr(functions.payments, "GetPaymentFormRequest"):
-            raise RuntimeError("TELETHON_STARGIFT_TL_MISSING")
-
-        return me
+            raise RuntimeError("RELAYER_SESSION invalid. QR bilan qayta session oling.")
+        return await self.client.get_me()
 
     async def stop(self):
         await self.client.disconnect()
@@ -526,13 +843,12 @@ class Relayer:
     def _clean_comment(s: Optional[str]) -> Optional[str]:
         if not s:
             return None
-        t = s.strip().replace("\r", " ").replace("\n", " ")
-        if not t:
+        t0 = s.strip().replace("\r", " ").replace("\n", " ")
+        if not t0:
             return None
-        # keep it small; Telegram may reject some long texts
-        if len(t) > 120:
-            t = t[:120]
-        return t
+        if len(t0) > 120:
+            t0 = t0[:120]
+        return t0
 
     async def send_star_gift(
         self,
@@ -541,22 +857,29 @@ class Relayer:
         gift: GiftItem,
         comment: Optional[str],
         hide_name: bool,
-    ) -> None:
+    ) -> bool:
         async with self._lock:
-            # Resolve entity
+            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
+            if isinstance(can, types.payments.CheckCanSendGiftResultFail):
+                reason = getattr(can.reason, "text", None) or str(can.reason)
+                raise RuntimeError(f"Can't send gift: {reason}")
+
             try:
                 peer = await self.client.get_input_entity(target)
             except Exception:
                 if isinstance(target, int):
                     raise RuntimeError(
-                        "Cannot resolve user_id. Use @username or receiver must message relayer once."
+                        "❌ user_id orqali entity topilmadi.\n"
+                        "✅ @username ishlating yoki qabul qiluvchi relayerga 1 marta yozsin."
                     )
                 raise
 
             cleaned = self._clean_comment(comment)
-            msg_obj = types.TextWithEntities(text=cleaned, entities=[]) if cleaned else None
+            msg_obj = None
+            if cleaned:
+                msg_obj = types.TextWithEntities(text=cleaned, entities=[])
 
-            extra: Dict[str, Any] = {}
+            extra = {}
             if hide_name:
                 extra["hide_name"] = True
 
@@ -565,115 +888,28 @@ class Relayer:
                     peer=peer,
                     gift_id=gift.id,
                     message=message_obj,
-                    **extra,
+                    **extra
                 )
                 form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
                 await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
 
-            # IMPORTANT:
-            # If Telegram rejects message, we do NOT silently resend without comment.
-            # We fail and let user change comment (so comment doesn't "disappear").
+            if msg_obj is None:
+                await _try_send(None)
+                return False
+
             try:
                 await _try_send(msg_obj)
+                return True
             except RPCError as e:
                 if "STARGIFT_MESSAGE_INVALID" in str(e):
-                    raise RuntimeError("STARGIFT_MESSAGE_INVALID: comment rejected. Try shorter / plain text.")
+                    await _try_send(None)
+                    return False
                 raise
 
 
-relayer = Relayer()
-
-
 # =========================
-# Bot UI
+# Utils
 # =========================
-def kb_menu(lang: str, hide_name: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "target"), callback_data="m:target")
-    kb.button(text=tr(lang, "comment"), callback_data="m:comment")
-    kb.button(text=tr(lang, "gift"), callback_data="m:gift")
-    kb.button(text=tr(lang, "send"), callback_data="m:pay")
-    kb.button(text=(tr(lang, "mode_hide") if hide_name == 1 else tr(lang, "mode_show")), callback_data="m:mode")
-    kb.button(text=tr(lang, "lang"), callback_data="m:lang")
-    kb.adjust(2, 2, 2)
-    return kb.as_markup()
-
-def kb_back(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "back_menu"), callback_data="m:home")
-    return kb.as_markup()
-
-def kb_prices(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for p in ALLOWED_PRICES:
-        kb.button(text=f"⭐ {p}", callback_data=f"p:{p}")
-    kb.button(text=tr(lang, "back_menu"), callback_data="m:home")
-    kb.adjust(2, 2, 1)
-    return kb.as_markup()
-
-def kb_gifts(lang: str, price: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for g in GIFTS_BY_PRICE.get(price, []):
-        kb.button(text=f"{g.label} » {g.id}", callback_data=f"g:{g.id}")
-    kb.button(text=tr(lang, "back_prices"), callback_data="m:gift")
-    kb.adjust(1)
-    return kb.as_markup()
-
-def kb_lang(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "lang_en"), callback_data="lang:en")
-    kb.button(text=tr(lang, "lang_ru"), callback_data="lang:ru")
-    kb.button(text=tr(lang, "back_menu"), callback_data="m:home")
-    kb.adjust(2, 1)
-    return kb.as_markup()
-
-def kb_invoice(lang: str, order_id: int, pay_url: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "check"), callback_data=f"o:{order_id}:check")
-    kb.button(text="💳 Pay", url=pay_url)
-    kb.adjust(1, 1)
-    return kb.as_markup()
-
-def kb_invoice_done() -> InlineKeyboardMarkup:
-    # no buttons (prevents duplicate sends)
-    return InlineKeyboardMarkup(inline_keyboard=[])
-
-       # =========================
-# FSM
-# =========================
-class Form(StatesGroup):
-    waiting_target = State()
-    waiting_comment = State()
-
-
-def normalize_target(text: str) -> str:
-    t = (text or "").strip()
-    if not t:
-        return "me"
-    if t.lower() == "me":
-        return "me"
-    if t.startswith("@"):
-        return t
-    if t.isdigit():
-        return t
-    return "@" + t
-
-def safe_comment(text: str) -> str:
-    t = (text or "").strip()
-    if len(t) > 250:
-        t = t[:250]
-    return t
-
-def resolve_target(stored_target: str, user_id: int, username: Optional[str]) -> Union[str, int]:
-    t = (stored_target or "me").strip()
-    if t.lower() == "me":
-        return ("@" + username) if username else user_id
-    if t.startswith("@"):
-        return t
-    if t.isdigit():
-        return int(t)
-    return "@" + t
-
 def calc_invoice_amount(stars: int) -> float:
     amt = stars * PRICE_PER_STAR
     if amt < PRICE_MIN:
@@ -681,35 +917,38 @@ def calc_invoice_amount(stars: int) -> float:
     return float(f"{amt:.2f}")
 
 
-async def render_status(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
-    lang, target, comment, sel_gift_id, hide_name = await db_get_user(user_id)
-    gift_txt = "—"
-    if sel_gift_id and sel_gift_id in GIFTS_BY_ID:
-        g = GIFTS_BY_ID[sel_gift_id]
-        gift_txt = f"{g.label} (⭐{g.stars}) — {g.id}"
-    mode_txt = tr(lang, "mode_hide") if hide_name == 1 else tr(lang, "mode_show")
-    comment_txt = comment if comment else "(—)"
-    text = (
-        f"{tr(lang, 'menu_title')}\n"
-        f"🎯 {target}\n"
-        f"💬 {comment_txt}\n"
-        f"🎁 {gift_txt}\n"
-        f"🔒 {mode_txt}\n\n"
-        f"{tr(lang, 'mode_hint')}"
-    )
-    return text, kb_menu(lang, hide_name)
+def normalize_target(text: str) -> str:
+    t0 = (text or "").strip()
+    if not t0:
+        return "me"
+    if t0.lower() == "me":
+        return "me"
+    if t0.startswith("@"):
+        return t0
+    if t0.isdigit():
+        return t0
+    return "@" + t0
 
 
-async def safe_edit(msg: Message, *, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
-    try:
-        await msg.edit_text(text, reply_markup=reply_markup)
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e).lower():
-            return
-        raise
+def safe_comment(text: str) -> str:
+    t0 = (text or "").strip()
+    if len(t0) > 250:
+        t0 = t0[:250]
+    return t0
 
 
-async def admin_notify(bot: Bot, text: str):
+def resolve_target_for_user(stored_target: str, user_id: int, username: Optional[str]) -> Union[str, int]:
+    t0 = (stored_target or "me").strip()
+    if t0.lower() == "me":
+        return ("@" + username) if username else user_id
+    if t0.startswith("@"):
+        return t0
+    if t0.isdigit():
+        return int(t0)
+    return "@" + t0
+
+
+async def admin_notify(text: str, bot: Bot):
     if ADMIN_CHAT_ID and ADMIN_CHAT_ID != 0:
         try:
             await bot.send_message(ADMIN_CHAT_ID, text)
@@ -717,178 +956,328 @@ async def admin_notify(bot: Bot, text: str):
             pass
 
 
-# =========================
-# Core payment->delivery logic
-# =========================
-async def create_invoice_for_order(
-    bot: Bot,
-    user_lang: str,
-    order_id: int,
-    gift: GiftItem,
-    target: str,
-    comment: Optional[str],
-    hide_name: int,
-) -> Tuple[int, str, str]:
-    amount = calc_invoice_amount(gift.stars)
-    desc = f"Gift {gift.stars}★ | order #{order_id}"
-    payload = f"order:{order_id}"
-
-    inv = await cryptopay.create_invoice(amount=amount, description=desc, payload=payload)
-
-    invoice_id = int(inv["invoice_id"])
-    pay_url = str(inv["pay_url"])
-    # amount returned might be string
-    inv_amount = str(inv.get("amount", amount))
-
-    return invoice_id, pay_url, inv_amount
-
-
-async def is_invoice_paid(invoice: Dict[str, Any]) -> bool:
-    # Crypto Pay invoice statuses: "active", "paid", "expired" etc
-    st = (invoice.get("status") or "").lower()
-    return st == "paid"
-
-
-async def deliver_order_if_needed(
-    bot: Bot,
-    order_id: int,
-    *,
-    source: str,
-) -> None:
+async def safe_edit_message_obj(msg, *, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
     """
-    Idempotent: will NOT deliver twice.
+    Avoid 'message is not modified' when user clicks buttons repeatedly.
     """
-    async with _db_lock:
+    try:
+        cur_text = getattr(msg, "text", None) or ""
+        cur_kb = getattr(msg, "reply_markup", None)
+        if cur_text == text and ((reply_markup is None and cur_kb is None) or (reply_markup is not None and cur_kb == reply_markup)):
+            return False
+        await msg.edit_text(text, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return False
+        raise
+
+
+async def safe_edit_by_id(bot: Bot, chat_id: int, message_id: int, *, text: str, reply_markup: Optional[InlineKeyboardMarkup]):
+    try:
+        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return
+        # if message deleted/invalid - ignore silently
+        if "message to edit not found" in str(e).lower() or "message can't be edited" in str(e).lower():
+            return
+        raise
+    except Exception:
+        return
+
+
+# =========================
+# UI builders
+# =========================
+def main_menu_kb(lang: str, anonymous: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t(lang, "menu_recipient"), callback_data="menu:target")
+    kb.button(text=t(lang, "menu_comment"), callback_data="menu:comment")
+    kb.button(text=t(lang, "menu_gift"), callback_data="menu:gift")
+    kb.button(
+        text=(t(lang, "menu_mode_anon") if anonymous == 1 else t(lang, "menu_mode_profile")),
+        callback_data="toggle:anon"
+    )
+    kb.button(text=t(lang, "menu_invoice"), callback_data="pay:create")
+    kb.button(text=t(lang, "menu_lang"), callback_data="lang:menu")
+    kb.adjust(2, 2, 2)
+    return kb.as_markup()
+
+
+def back_menu_kb(lang: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
+    return kb.as_markup()
+
+
+def price_kb(lang: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for p in ALLOWED_PRICES:
+        kb.button(text=f"⭐ {p}", callback_data=f"price:{p}")
+    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
+    kb.adjust(2, 2, 1)
+    return kb.as_markup()
+
+
+def gifts_by_price_kb(lang: str, price: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for g in GIFTS_BY_PRICE.get(price, []):
+        kb.button(text=f"{g.label} » {g.id}", callback_data=f"gift:{g.id}")
+    kb.button(text=t(lang, "back_prices"), callback_data="menu:gift")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def pay_invoice_kb(lang: str, invoice_url: str, order_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t(lang, "invoice_open"), url=invoice_url)
+    kb.button(text=t(lang, "invoice_check"), callback_data=f"pay:check:{order_id}")
+    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
+    kb.adjust(1, 2)
+    return kb.as_markup()
+
+
+def paid_done_kb(lang: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
+    return kb.as_markup()
+
+
+def lang_pick_kb(lang: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🇺🇿 UZ", callback_data="lang:set:uz")
+    kb.button(text="🇷🇺 RU", callback_data="lang:set:ru")
+    kb.button(text="🇬🇧 EN", callback_data="lang:set:en")
+    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
+    kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+async def render_status_text_and_kb(user_id: int) -> Tuple[str, InlineKeyboardMarkup, str]:
+    target, comment, sel_gift_id, anonymous, lang = await db_get_settings(user_id)
+
+    gift_txt = t(lang, "gift_none")
+    if sel_gift_id and sel_gift_id in GIFTS_BY_ID:
+        g = GIFTS_BY_ID[sel_gift_id]
+        gift_txt = f"{g.label} (⭐{g.stars}) — {g.id}"
+
+    comment_txt = comment if comment else t(lang, "comment_empty")
+    mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
+
+    text = (
+        f"{t(lang, 'status_title')}\n"
+        f"{t(lang, 'status_target', target=target)}\n"
+        f"{t(lang, 'status_comment', comment=comment_txt)}\n"
+        f"{t(lang, 'status_gift', gift=gift_txt)}\n"
+        f"{t(lang, 'status_mode', mode=mode_txt)}\n"
+        f"{t(lang, 'status_choose')}"
+    )
+    return text, main_menu_kb(lang, anonymous), lang
+
+
+# =========================
+# App objects
+# =========================
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+cryptopay = CryptoPayAPI(CRYPTOPAY_TOKEN, CRYPTOPAY_BASE_URL)
+relayer = Relayer()
+
+# local in-process guard for same order task spam
+_processing: set[int] = set()
+_processing_lock = asyncio.Lock()
+
+
+# =========================
+# Delivery core
+# =========================
+async def _update_origin_message(order: dict, lang: str, text: str, done: bool):
+    chat_id = order.get("origin_chat_id")
+    msg_id = order.get("origin_message_id")
+    if chat_id and msg_id:
+        kb = paid_done_kb(lang) if done else paid_done_kb(lang)
+        await safe_edit_by_id(bot, int(chat_id), int(msg_id), text=text, reply_markup=kb)
+
+
+async def process_order_send(order_id: int):
+    """
+    Sends gift exactly once:
+    - requires order.status == 'paid'
+    - atomically claims paid->sending using db_claim_sending
+    - marks sent/failed
+    """
+    async with _processing_lock:
+        if order_id in _processing:
+            return
+        _processing.add(order_id)
+
+    try:
         order = await db_get_order(order_id)
         if not order:
             return
 
-        if order["status"] == "delivered":
+        user_id = int(order["user_id"])
+        _, _, _, _, lang = await db_get_settings(user_id)
+
+        # if already sent/sending -> do nothing
+        if order["status"] == "sent":
             return
-        if order["status"] == "delivering":
-            return
-        if order["status"] not in ("paid", "created"):
+        if order["status"] == "sending":
             return
 
-    # If status is created, we still need invoice status; manual check path might call this.
-    if order["status"] == "created":
-        if not order["invoice_id"]:
+        # claim paid->sending atomically (prevents double-send)
+        claimed = await db_claim_sending(order_id)
+        if not claimed:
+            # maybe not paid yet / already claimed / already sent
             return
-        invs = await cryptopay.get_invoices([int(order["invoice_id"])])
-        inv = invs[0] if invs else None
-        if not inv or not await is_invoice_paid(inv):
-            return
-        await db_mark_paid(order_id)
 
-    # Claim delivery (prevents duplicates)
-    claimed = await db_claim_delivery(order_id)
-    if not claimed:
-        return
+        # update origin message: sending
+        await _update_origin_message(order, lang, t(lang, "paid_sending"), done=False)
 
-    # Now load full
-    order = await db_get_order(order_id)
-    if not order:
-        return
+        gift = GIFTS_BY_ID.get(int(order["gift_id"]))
+        if not gift:
+            raise RuntimeError("Gift not found in catalog")
 
-    user_id = int(order["user_id"])
-    lang, _, _, _, _ = await db_get_user(user_id)
+        stored_target = str(order["target"])
+        if stored_target.startswith("@"):
+            target: Union[str, int] = stored_target
+        elif stored_target.isdigit():
+            target = int(stored_target)
+        else:
+            target = stored_target
 
-    gift_id = int(order["gift_id"])
-    gift = GIFTS_BY_ID.get(gift_id)
-    if not gift:
-        await db_mark_failed(order_id, f"Unknown gift_id: {gift_id}")
-        return
+        comment = order.get("comment")
+        anonymous = int(order.get("anonymous") or 0)
+        mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
 
-    # Resolve target for relayer
-    # If target stored is "me" -> send to buyer
-    buyer_username = None
-    try:
-        # we don't have direct username here; keep target as stored string
-        pass
-    except Exception:
-        pass
-
-    resolved_target = resolve_target(str(order["target"]), user_id, buyer_username)
-    hide_name = bool(int(order["hide_name"] or 0))
-    comment = order.get("comment")
-
-    # Try send
-    try:
-        await relayer.send_star_gift(
-            target=resolved_target,
+        comment_attached = await relayer.send_star_gift(
+            target=target,
             gift=gift,
             comment=comment,
-            hide_name=hide_name,
+            hide_name=(anonymous == 1),
         )
-        await db_mark_delivered(order_id)
 
-        # Update invoice message to "done" and remove buttons
-        if order.get("msg_chat_id") and order.get("msg_message_id"):
-            try:
-                m = await bot.edit_message_text(
-                    chat_id=int(order["msg_chat_id"]),
-                    message_id=int(order["msg_message_id"]),
-                    text=tr(lang, "paid") + "\n\n" + tr(lang, "already_delivered"),
-                    reply_markup=kb_invoice_done(),
-                )
-                _ = m
-            except TelegramBadRequest as e:
-                if "message is not modified" not in str(e).lower():
-                    log.warning("edit invoice msg failed: %s", e)
+        await db_mark_sent(order_id)
 
-        await admin_notify(bot, f"✅ Delivered | order #{order_id} | source={source}")
+        # update origin message: sent (no more check button!)
+        done_text = t(lang, "already_sent")
+        await _update_origin_message(order, lang, done_text, done=True)
+
+        comment_line = ""
+        comment_warn = ""
+        if comment:
+            comment_line = t(lang, "comment_line", comment=comment)
+            if not comment_attached:
+                comment_warn = t(lang, "comment_warn")
+
+        await bot.send_message(
+            user_id,
+            t(
+                lang,
+                "delivery_sent_dm",
+                order=order_id,
+                gift=gift.label,
+                stars=gift.stars,
+                target=stored_target,
+                mode=mode_txt,
+                comment_line=comment_line,
+                comment_warn=comment_warn,
+            )
+        )
 
     except Exception as e:
-        await db_mark_failed(order_id, str(e))
-        await admin_notify(bot, f"❌ Delivery failed | order #{order_id} | {e}")
+        err = str(e)
+        await db_mark_failed(order_id, err)
+        try:
+            order = await db_get_order(order_id)
+            if order:
+                user_id = int(order["user_id"])
+                _, _, _, _, lang = await db_get_settings(user_id)
+                await _update_origin_message(order, lang, t(lang, "delivery_failed_dm", order=order_id, err=err), done=True)
+                await bot.send_message(user_id, t(lang, "delivery_failed_dm", order=order_id, err=err))
+        except Exception:
+            pass
+        await admin_notify(f"❌ Delivery failed | order #{order_id} | {err}", bot)
+    finally:
+        async with _processing_lock:
+            _processing.discard(order_id)
+
 
 # =========================
-# Invoice watcher
+# Invoice watcher (polling)
 # =========================
-_invoice_task: Optional[asyncio.Task] = None
-
-async def invoice_watcher(bot: Bot):
+async def invoice_watcher():
     while True:
         try:
-            await asyncio.sleep(INVOICE_POLL_INTERVAL)
-            pending = await db_list_pending_orders(INVOICE_POLL_BATCH)
-            if not pending:
+            rows = await db_list_active_invoice_orders(limit=200)
+            if not rows:
+                await asyncio.sleep(INVOICE_POLL_INTERVAL)
                 continue
 
-            invoice_ids = [p["invoice_id"] for p in pending if p.get("invoice_id")]
+            invoice_ids = [str(int(r["invoice_id"])) for r in rows if r.get("invoice_id") is not None]
             if not invoice_ids:
+                await asyncio.sleep(INVOICE_POLL_INTERVAL)
                 continue
 
-            invs = await cryptopay.get_invoices(invoice_ids)
-            inv_by_id = {int(x["invoice_id"]): x for x in invs if x.get("invoice_id")}
+            # CryptoPay supports invoice_ids list as comma separated
+            chunk_size = 80
+            for i in range(0, len(invoice_ids), chunk_size):
+                chunk = invoice_ids[i:i + chunk_size]
+                items = await cryptopay.get_invoices(invoice_ids=",".join(chunk))
 
-            for p in pending:
-                oid = int(p["id"])
-                iid = int(p["invoice_id"])
-                inv = inv_by_id.get(iid)
-                if not inv:
-                    continue
-                if await is_invoice_paid(inv):
-                    changed = await db_mark_paid(oid)
-                    # even if already paid, deliver_if_needed is idempotent
-                    await deliver_order_if_needed(bot, oid, source="watcher")
+                # Map invoice_id -> status
+                inv_status = {}
+                for inv in items:
+                    try:
+                        inv_id = str(int(inv.get("invoice_id")))
+                        inv_status[inv_id] = inv.get("status")
+                    except Exception:
+                        continue
 
+                for r in rows:
+                    inv_id = str(int(r["invoice_id"]))
+                    st = inv_status.get(inv_id)
+                    if not st:
+                        continue
+
+                    oid = int(r["order_id"])
+
+                    if st == "paid":
+                        # mark paid only if active/creating (never revert sent)
+                        changed = await db_mark_paid_if_needed(oid)
+                        # if paid already (changed False), still try send (safe claim prevents duplicates)
+                        asyncio.create_task(process_order_send(oid), name=f"send_{oid}")
+
+                    elif st == "expired":
+                        await db_mark_expired_if_needed(oid)
+
+            await asyncio.sleep(INVOICE_POLL_INTERVAL)
+
+        except asyncio.CancelledError:
+            return
         except Exception as e:
             log.error("invoice_watcher error: %s", e)
+            await asyncio.sleep(max(5.0, INVOICE_POLL_INTERVAL))
 
 
 # =========================
-# Aiogram app
+# States
 # =========================
-bot = Bot(BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+class Form(StatesGroup):
+    waiting_target = State()
+    waiting_comment = State()
 
 
+# =========================
+# Handlers
+# =========================
 @dp.message(Command("start"))
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
-    await db_ensure_user(m.from_user.id)
-    text, kb = await render_status(m.from_user.id)
+    default_target = f"@{m.from_user.username}" if m.from_user.username else str(m.from_user.id)
+    await db_ensure_user(m.from_user.id, default_target=default_target)
+    text, kb, _lang = await render_status_text_and_kb(m.from_user.id)
     await m.answer(text, reply_markup=kb)
 
 
@@ -896,272 +1285,360 @@ async def cmd_start(m: Message, state: FSMContext):
 async def cmd_menu(m: Message, state: FSMContext):
     await state.clear()
     await db_ensure_user(m.from_user.id)
-    text, kb = await render_status(m.from_user.id)
+    text, kb, _lang = await render_status_text_and_kb(m.from_user.id)
     await m.answer(text, reply_markup=kb)
 
 
-@dp.callback_query(F.data == "m:home")
-async def cb_home(c: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "menu:home")
+async def menu_home(c: CallbackQuery, state: FSMContext):
     await c.answer()
     await state.clear()
     await db_ensure_user(c.from_user.id)
-    text, kb = await render_status(c.from_user.id)
-    await safe_edit(c.message, text=text, reply_markup=kb)
+    text, kb, _lang = await render_status_text_and_kb(c.from_user.id)
+    await safe_edit_message_obj(c.message, text=text, reply_markup=kb)
 
 
-@dp.callback_query(F.data == "m:target")
-async def cb_target(c: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "toggle:anon")
+async def toggle_anon(c: CallbackQuery, state: FSMContext):
+    await c.answer()
+    await state.clear()
+    await db_ensure_user(c.from_user.id)
+    new_val = await db_toggle_anonymous(c.from_user.id)
+    text, kb, lang = await render_status_text_and_kb(c.from_user.id)
+    note = t(lang, "toggle_anon_on") if new_val == 1 else t(lang, "toggle_anon_off")
+    await safe_edit_message_obj(c.message, text=note + "\n\n" + text, reply_markup=kb)
+
+
+@dp.callback_query(F.data == "lang:menu")
+async def lang_menu(c: CallbackQuery):
     await c.answer()
     await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
+    await safe_edit_message_obj(c.message, text=t(lang, "lang_pick"), reply_markup=lang_pick_kb(lang))
+
+
+@dp.callback_query(F.data.startswith("lang:set:"))
+async def lang_set(c: CallbackQuery):
+    await c.answer()
+    lang_new = c.data.split(":")[-1].strip().lower()
+    await db_ensure_user(c.from_user.id)
+    await db_set_lang(c.from_user.id, lang_new)
+    text, kb, lang = await render_status_text_and_kb(c.from_user.id)
+    await safe_edit_message_obj(c.message, text=t(lang, "lang_set") + "\n\n" + text, reply_markup=kb)
+
+
+@dp.callback_query(F.data == "menu:target")
+async def menu_target(c: CallbackQuery, state: FSMContext):
+    await c.answer()
+    await db_ensure_user(c.from_user.id)
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
     await state.set_state(Form.waiting_target)
-    await safe_edit(c.message, text=tr(lang, "ask_target"), reply_markup=kb_back(lang))
+    await safe_edit_message_obj(c.message, text=t(lang, "prompt_target"), reply_markup=back_menu_kb(lang))
+
+
+@dp.callback_query(F.data == "menu:comment")
+async def menu_comment(c: CallbackQuery, state: FSMContext):
+    await c.answer()
+    await db_ensure_user(c.from_user.id)
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
+    await state.set_state(Form.waiting_comment)
+    await safe_edit_message_obj(c.message, text=t(lang, "prompt_comment"), reply_markup=back_menu_kb(lang))
+
+
+@dp.callback_query(F.data == "menu:gift")
+async def menu_gift(c: CallbackQuery, state: FSMContext):
+    await c.answer()
+    await state.clear()
+    await db_ensure_user(c.from_user.id)
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
+    await safe_edit_message_obj(c.message, text=t(lang, "pick_price"), reply_markup=price_kb(lang))
+
+
+@dp.callback_query(F.data.startswith("price:"))
+async def choose_price(c: CallbackQuery):
+    await c.answer()
+    await db_ensure_user(c.from_user.id)
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
+    price = int(c.data.split(":", 1)[1])
+    if price not in GIFTS_BY_PRICE:
+        return await safe_edit_message_obj(c.message, text=t(lang, "pick_price"), reply_markup=price_kb(lang))
+    await safe_edit_message_obj(c.message, text=t(lang, "pick_by_price", price=price), reply_markup=gifts_by_price_kb(lang, price))
+
+
+@dp.callback_query(F.data.startswith("gift:"))
+async def choose_gift(c: CallbackQuery):
+    await c.answer()
+    await db_ensure_user(c.from_user.id)
+    gift_id = int(c.data.split(":", 1)[1])
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
+
+    if gift_id not in GIFTS_BY_ID:
+        return await safe_edit_message_obj(c.message, text=t(lang, "pick_price"), reply_markup=price_kb(lang))
+
+    await db_set_selected_gift(c.from_user.id, gift_id)
+    g = GIFTS_BY_ID[gift_id]
+    _, _, _, anonymous, lang = await db_get_settings(c.from_user.id)
+
+    await safe_edit_message_obj(
+        c.message,
+        text=t(lang, "gift_selected", label=g.label, stars=g.stars, gid=g.id),
+        reply_markup=main_menu_kb(lang, anonymous)
+    )
 
 
 @dp.message(Form.waiting_target)
-async def st_target(m: Message, state: FSMContext):
+async def set_target(m: Message, state: FSMContext):
     await db_ensure_user(m.from_user.id)
-    lang, *_ = await db_get_user(m.from_user.id)
-    t = normalize_target(m.text or "")
-    await db_set_target(m.from_user.id, t)
+    target_norm = normalize_target(m.text or "")
+    await db_set_target(m.from_user.id, target_norm)
     await state.clear()
-    text, kb = await render_status(m.from_user.id)
-    await m.answer(tr(lang, "saved") + "\n\n" + text, reply_markup=kb)
-
-
-@dp.callback_query(F.data == "m:comment")
-async def cb_comment(c: CallbackQuery, state: FSMContext):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
-    await state.set_state(Form.waiting_comment)
-    await safe_edit(c.message, text=tr(lang, "ask_comment"), reply_markup=kb_back(lang))
+    text, kb, lang = await render_status_text_and_kb(m.from_user.id)
+    await m.answer(t(lang, "saved_target", status=text), reply_markup=kb)
 
 
 @dp.message(Form.waiting_comment)
-async def st_comment(m: Message, state: FSMContext):
+async def set_comment(m: Message, state: FSMContext):
     await db_ensure_user(m.from_user.id)
-    lang, *_ = await db_get_user(m.from_user.id)
-
     raw = (m.text or "").strip()
-    if raw == "-" or raw.lower() in ("off", "none"):
+    _, _, _, _, lang = await db_get_settings(m.from_user.id)
+
+    if raw == "-" or raw.lower() in ("off", "none", "null"):
         await db_set_comment(m.from_user.id, None)
         await state.clear()
-        text, kb = await render_status(m.from_user.id)
-        await m.answer(tr(lang, "comment_cleared") + "\n\n" + text, reply_markup=kb)
-        return
+        text, kb, lang = await render_status_text_and_kb(m.from_user.id)
+        return await m.answer(t(lang, "deleted_comment", status=text), reply_markup=kb)
 
-    cm = safe_comment(raw)
-    await db_set_comment(m.from_user.id, cm)
+    comment = safe_comment(raw)
+    await db_set_comment(m.from_user.id, comment)
     await state.clear()
-    text, kb = await render_status(m.from_user.id)
-    await m.answer(tr(lang, "saved") + "\n\n" + text, reply_markup=kb)
+    text, kb, lang = await render_status_text_and_kb(m.from_user.id)
+    await m.answer(t(lang, "saved_comment", status=text), reply_markup=kb)
 
 
-@dp.callback_query(F.data == "m:gift")
-async def cb_gift(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
-    await safe_edit(c.message, text=tr(lang, "pick_price"), reply_markup=kb_prices(lang))
-
-
-@dp.callback_query(F.data.startswith("p:"))
-async def cb_price(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
-    price = int(c.data.split(":", 1)[1])
-    if price not in GIFTS_BY_PRICE:
-        await safe_edit(c.message, text=tr(lang, "pick_price"), reply_markup=kb_prices(lang))
-        return
-    await safe_edit(c.message, text=tr(lang, "pick_gift", price=price), reply_markup=kb_gifts(lang, price))
-
-
-@dp.callback_query(F.data.startswith("g:"))
-async def cb_pick_gift(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
-    gid = int(c.data.split(":", 1)[1])
-    if gid not in GIFTS_BY_ID:
-        await safe_edit(c.message, text=tr(lang, "pick_price"), reply_markup=kb_prices(lang))
-        return
-    await db_set_selected_gift(c.from_user.id, gid)
-    g = GIFTS_BY_ID[gid]
-    await safe_edit(
-        c.message,
-        text=tr(lang, "gift_selected", label=g.label, stars=g.stars, gid=g.id),
-        reply_markup=kb_menu(lang, (await db_get_user(c.from_user.id))[4]),
-    )
-
-
-@dp.callback_query(F.data == "m:mode")
-async def cb_mode(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    newv = await db_toggle_hide_name(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
-    text, kb = await render_status(c.from_user.id)
-    await safe_edit(c.message, text=tr(lang, "saved") + "\n\n" + text, reply_markup=kb)
-
-
-@dp.callback_query(F.data == "m:lang")
-async def cb_lang_menu(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
-    await safe_edit(c.message, text="🌐", reply_markup=kb_lang(lang))
-
-
-@dp.callback_query(F.data.startswith("lang:"))
-async def cb_lang_set(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    lang = c.data.split(":", 1)[1]
-    if lang not in ("en", "ru"):
-        lang = "ru"
-    await db_set_lang(c.from_user.id, lang)
-    text, kb = await render_status(c.from_user.id)
-    await safe_edit(c.message, text=tr(lang, "saved") + "\n\n" + text, reply_markup=kb)
-
-
-@dp.callback_query(F.data == "m:pay")
-async def cb_pay(c: CallbackQuery):
+# =========================
+# Payments
+# =========================
+@dp.callback_query(F.data == "pay:create")
+async def pay_create(c: CallbackQuery):
     await c.answer()
     await db_ensure_user(c.from_user.id)
 
-    lang, target, comment, sel_gift_id, hide_name = await db_get_user(c.from_user.id)
+    target_str, comment, sel_gift_id, anonymous, lang = await db_get_settings(c.from_user.id)
     if not sel_gift_id or sel_gift_id not in GIFTS_BY_ID:
-        text, kb = await render_status(c.from_user.id)
-        await safe_edit(c.message, text=tr(lang, "need_gift") + "\n\n" + text, reply_markup=kb)
-        return
+        status_text, status_kb, lang = await render_status_text_and_kb(c.from_user.id)
+        return await safe_edit_message_obj(
+            c.message,
+            text=t(lang, "need_gift_first", status=status_text),
+            reply_markup=status_kb
+        )
 
     gift = GIFTS_BY_ID[sel_gift_id]
-    # store order with target string as user set (can be "me")
+    target = resolve_target_for_user(target_str, c.from_user.id, c.from_user.username)
+
+    amount = calc_invoice_amount(gift.stars)
+    amount_str = f"{amount:.2f}"
+    price_currency = PAY_ASSET if CURRENCY_TYPE == "crypto" else PAY_FIAT
+
+    mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
+    comment_txt = comment if comment else t(lang, "comment_empty")
+
     order_id = await db_create_order(
         user_id=c.from_user.id,
-        target=target,
+        target=str(target),
         gift=gift,
         comment=comment,
-        hide_name=hide_name,
+        anonymous=anonymous,
+        price_amount=amount_str,
+        price_currency=price_currency,
+    )
+
+    await safe_edit_message_obj(
+        c.message,
+        text=t(
+            lang,
+            "invoice_creating",
+            order=order_id,
+            gift=gift.label,
+            stars=gift.stars,
+            target=target,
+            mode=mode_txt,
+            comment=comment_txt,
+            amount=amount_str,
+            cur=price_currency
+        ),
+        reply_markup=None
     )
 
     try:
-        invoice_id, pay_url, inv_amount = await create_invoice_for_order(
-            bot, lang, order_id, gift, target, comment, hide_name
+        paid_btn_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
+        inv = await cryptopay.create_invoice(
+            description=f"Telegram Gift: {gift.label} (⭐{gift.stars})",
+            payload=json.dumps({"order_id": order_id}, ensure_ascii=False),
+            amount=amount_str,
+            currency_type=("crypto" if CURRENCY_TYPE == "crypto" else "fiat"),
+            asset=(PAY_ASSET if CURRENCY_TYPE == "crypto" else None),
+            fiat=(PAY_FIAT if CURRENCY_TYPE == "fiat" else None),
+            accepted_assets=(ACCEPTED_ASSETS if CURRENCY_TYPE == "fiat" else None),
+            expires_in=INVOICE_EXPIRES_IN,
+            allow_comments=False,
+            allow_anonymous=True,
+            paid_btn_url=paid_btn_url,
         )
 
-        mode_txt = tr(lang, "mode_hide") if hide_name == 1 else tr(lang, "mode_show")
-        cm_txt = comment if comment else "(—)"
-        text = tr(
-            lang,
-            "invoice_text",
-            oid=order_id,
-            gift=f"{gift.label} (⭐{gift.stars})",
-            target=target,
-            mode=mode_txt,
-            comment=cm_txt,
-            pay_url=pay_url,
+        invoice_id = int(inv["invoice_id"])
+        invoice_url = inv.get("bot_invoice_url") or inv.get("pay_url")
+        if not invoice_url:
+            raise RuntimeError(f"Invoice URL not found: {inv}")
+
+        await db_attach_invoice(order_id, invoice_id, invoice_url)
+
+        await safe_edit_message_obj(
+            c.message,
+            text=t(
+                lang,
+                "invoice_ready",
+                order=order_id,
+                gift=gift.label,
+                stars=gift.stars,
+                target=target,
+                amount=amount_str,
+                cur=price_currency,
+            ),
+            reply_markup=pay_invoice_kb(lang, invoice_url, order_id)
         )
 
-        sent = await c.message.answer(text, reply_markup=kb_invoice(lang, order_id, pay_url))
-        await db_attach_invoice(
-            order_id,
-            invoice_id=invoice_id,
-            pay_url=pay_url,
-            amount=inv_amount,
-            currency_type=CP_CURRENCY_TYPE,
-            asset=(CP_ASSET if CP_CURRENCY_TYPE == "crypto" else None),
-            fiat=(CP_FIAT if CP_CURRENCY_TYPE == "fiat" else None),
-            msg_chat_id=sent.chat.id,
-            msg_message_id=sent.message_id,
-        )
-
-        # refresh menu message
-        menu_text, menu_kb = await render_status(c.from_user.id)
-        await safe_edit(c.message, text=menu_text, reply_markup=menu_kb)
+        # store message where invoice is shown -> we will update it when sent
+        await db_set_order_origin_message(order_id, int(c.message.chat.id), int(c.message.message_id))
 
     except Exception as e:
-        text, kb = await render_status(c.from_user.id)
-        await safe_edit(c.message, text=tr(lang, "err", e=e) + "\n\n" + text, reply_markup=kb)
+        await db_mark_failed(order_id, str(e))
+        await admin_notify(f"❌ Invoice create failed | order #{order_id} | {e}", bot)
+        status_text, status_kb, lang = await render_status_text_and_kb(c.from_user.id)
+        await safe_edit_message_obj(
+            c.message,
+            text=f"❌ Invoice error: {e}\n\n{status_text}",
+            reply_markup=status_kb
+        )
 
 
-@dp.callback_query(F.data.startswith("o:"))
-async def cb_order_actions(c: CallbackQuery):
+@dp.callback_query(F.data.startswith("pay:check:"))
+async def pay_check(c: CallbackQuery):
     await c.answer()
-    parts = c.data.split(":")
-    if len(parts) != 3:
-        return
-    order_id = int(parts[1])
-    action = parts[2]
-
     await db_ensure_user(c.from_user.id)
-    lang, *_ = await db_get_user(c.from_user.id)
+    _, _, _, _, lang = await db_get_settings(c.from_user.id)
 
+    order_id = int(c.data.split(":")[-1])
     order = await db_get_order(order_id)
-    if not order or int(order["user_id"]) != c.from_user.id:
-        return
 
-    # If already delivered -> remove buttons, stop duplicates
-    if order["status"] == "delivered":
-        await safe_edit(c.message, text=tr(lang, "already_delivered"), reply_markup=kb_invoice_done())
-        return
+    if not order or int(order["user_id"]) != int(c.from_user.id):
+        return await safe_edit_message_obj(c.message, text=t(lang, "check_forbidden"), reply_markup=back_menu_kb(lang))
 
-    if action == "check":
-        # Check invoice status
-        if not order.get("invoice_id"):
-            await safe_edit(c.message, text=tr(lang, "err", e="no invoice id"), reply_markup=kb_invoice_done())
-            return
+    # IMPORTANT: if already sent/sending -> do not revert status; no extra sending
+    if order["status"] == "sent":
+        return await safe_edit_message_obj(c.message, text=t(lang, "already_sent"), reply_markup=paid_done_kb(lang))
+    if order["status"] == "sending":
+        return await safe_edit_message_obj(c.message, text=t(lang, "already_sending"), reply_markup=paid_done_kb(lang))
 
-        invs = await cryptopay.get_invoices([int(order["invoice_id"])])
-        inv = invs[0] if invs else None
-        if not inv or not await is_invoice_paid(inv):
-            # keep same markup; safe_edit prevents message-not-modified crash
-            await safe_edit(c.message, text=tr(lang, "not_paid"), reply_markup=kb_invoice(lang, order_id, order.get("pay_url") or ""))
-            return
+    inv_id = order.get("invoice_id")
+    if not inv_id:
+        return await safe_edit_message_obj(c.message, text=t(lang, "check_no_invoice"), reply_markup=back_menu_kb(lang))
 
-        # mark paid (if not already) and deliver (idempotent)
-        await db_mark_paid(order_id)
-        await safe_edit(c.message, text=tr(lang, "paid"), reply_markup=kb_invoice_done())
-        await deliver_order_if_needed(bot, order_id, source="manual_check")
-        # =========================
-# Startup / Shutdown
+    try:
+        items = await cryptopay.get_invoices(invoice_ids=str(int(inv_id)))
+        inv = items[0] if items else None
+        if not inv:
+            return await safe_edit_message_obj(c.message, text=t(lang, "check_not_found"), reply_markup=back_menu_kb(lang))
+
+        status = inv.get("status")
+
+        if status == "paid":
+            # mark paid only if needed (won't revert sent)
+            await db_mark_paid_if_needed(order_id)
+
+            # kick sender (safe claim prevents duplicates)
+            asyncio.create_task(process_order_send(order_id), name=f"send_{order_id}")
+
+            # update this message (and store it as origin too)
+            await db_set_order_origin_message(order_id, int(c.message.chat.id), int(c.message.message_id))
+
+            return await safe_edit_message_obj(
+                c.message,
+                text=t(lang, "paid_sending"),
+                reply_markup=paid_done_kb(lang)  # no more "check" button
+            )
+
+        if status == "expired":
+            await db_mark_expired_if_needed(order_id)
+            return await safe_edit_message_obj(c.message, text=t(lang, "check_expired"), reply_markup=back_menu_kb(lang))
+
+        # not paid yet
+        kb = pay_invoice_kb(lang, order["invoice_url"], order_id) if order.get("invoice_url") else back_menu_kb(lang)
+        txt = t(lang, "check_status", order=order_id, status=status)
+        edited = await safe_edit_message_obj(c.message, text=txt, reply_markup=kb)
+        if not edited:
+            await c.answer("No changes.", show_alert=False)
+
+    except Exception as e:
+        # show toast instead of breaking UI
+        await c.answer(f"Error: {e}", show_alert=True)
+
+
 # =========================
-async def on_startup():
-    await db_init()
-    await cryptopay.start()
-
-    try:
-        me = await relayer.start()
-    except RuntimeError as e:
-        if "TELETHON_STARGIFT_TL_MISSING" in str(e):
-            log.error("Telethon missing StarGift TL")
-            raise RuntimeError(T["ru"]["telethon_missing"])
-        raise
-
-    log.info("[RELAYER] authorized as id=%s username=%s", me.id, me.username)
-
-    global _invoice_task
-    _invoice_task = asyncio.create_task(invoice_watcher(bot))
-    log.info("invoice_watcher started")
+# Web server (health)
+# =========================
+async def web_health(_request: web.Request):
+    return web.json_response({"ok": True})
 
 
-async def on_shutdown():
-    global _invoice_task
-    if _invoice_task:
-        _invoice_task.cancel()
-        _invoice_task = None
-    await cryptopay.stop()
-    await relayer.stop()
+async def start_web_server() -> web.AppRunner:
+    app = web.Application()
+    app.router.add_get("/", web_health)
+    app.router.add_get("/health", web_health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, WEB_BIND, PORT)
+    await site.start()
+    log.info("Web server listening on %s:%s", WEB_BIND, PORT)
+    return runner
 
 
+# =========================
+# Main
+# =========================
 async def main():
-    await on_startup()
+    log.info("BOOT: starting...")
+    await db_init()
+    log.info("BOOT: db_init OK")
+
+    await cryptopay.start()
+    me_app = await cryptopay.get_me()
+    log.info("CryptoPay OK | app_id=%s name=%s", me_app.get("app_id"), me_app.get("name"))
+
+    rel = await relayer.start()
+    log.info("Relayer OK | id=%s username=%s", getattr(rel, "id", None), getattr(rel, "username", None))
+
+    runner = await start_web_server()
+
+    watcher_task = asyncio.create_task(invoice_watcher(), name="invoice_watcher")
+
     try:
+        log.info("BOOT: polling...")
         await dp.start_polling(bot)
     finally:
-        await on_shutdown()
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except Exception:
+            pass
+
+        await cryptopay.stop()
+        await relayer.stop()
+
+        try:
+            await runner.cleanup()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
