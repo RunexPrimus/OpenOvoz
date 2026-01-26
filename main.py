@@ -58,7 +58,7 @@ CRYPTOPAY_TOKEN = env_required("CRYPTOPAY_TOKEN")
 CRYPTOPAY_BASE_URL = os.getenv("CRYPTOPAY_BASE_URL", "https://pay.crypt.bot").rstrip("/")
 
 # Pricing (your business logic)
-PRICE_PER_STAR = float(os.getenv("PRICE_PER_STAR", "0.02"))
+PRICE_PER_STAR = float(os.getenv("PRICE_PER_STAR", "0.015"))
 PRICE_MIN = float(os.getenv("PRICE_MIN", "0.10"))
 
 # CryptoBot Invoice config
