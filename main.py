@@ -1,10 +1,12 @@
 import os
+import re
+import time
+import json
 import asyncio
 import logging
-import time
+import secrets
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
-from contextlib import asynccontextmanager
 
 import aiosqlite
 from dotenv import load_dotenv
@@ -12,17 +14,26 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (
-    Message, CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineQuery, InlineQueryResultArticle,
-    InputTextMessageContent,
+    Message, CallbackQuery, InlineQuery,
+    InlineKeyboardMarkup, InlineQueryResultArticle,
+    InputTextMessageContent
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramBadRequest
 
 from telethon import TelegramClient, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import RPCError
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError
+
+
+# =========================
+# IMPORTANT (1 daqiqa o‘qi!)
+# =========================
+# 1) RELAYER_SESSION faqat 1 joyda ishlasin. Aks holda AuthKeyDuplicatedError bo‘ladi.
+# 2) Hostingda 1 ta instance/dyno qoldir.
+# 3) Bot admin-only: faqat adminlar foydalanadi.
+# 4) Inline ishlashi uchun BotFather’da Inline Mode yoqilgan bo‘lishi kerak.
 
 
 # =========================
@@ -36,10 +47,9 @@ log = logging.getLogger("giftbot")
 
 
 # =========================
-# ENV
+# Env
 # =========================
 load_dotenv()
-
 
 def env_required(name: str) -> str:
     v = os.getenv(name)
@@ -47,482 +57,341 @@ def env_required(name: str) -> str:
         raise RuntimeError(f"Missing required env var: {name}")
     return v
 
-
 BOT_TOKEN = env_required("BOT_TOKEN")
 TG_API_ID = int(env_required("TG_API_ID"))
 TG_API_HASH = env_required("TG_API_HASH")
 RELAYER_SESSION = env_required("RELAYER_SESSION")
 
-DB_PATH = os.getenv("DB_PATH", "bot.db")
-
-# owner admin id (bosh admin)
+# Owner (bosh admin)
 OWNER_ID = int(os.getenv("OWNER_ID", "7440949683"))
 
-# default language for everyone (siz xohlagan: RU)
-DEFAULT_LANG = os.getenv("DEFAULT_LANG", "ru").strip().lower()
-if DEFAULT_LANG not in ("uz", "ru", "en"):
-    DEFAULT_LANG = "ru"
+DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 
 # =========================
-# i18n (minimal, clean)
-# =========================
-TR = {
-    "ru": {
-        "no_access": "⛔ Нет доступа.",
-        "menu_title": "Выберите действие:",
-        "target_set": "✅ Получатель сохранён.",
-        "comment_set": "✅ Комментарий сохранён.",
-        "comment_removed": "✅ Комментарий удалён.",
-        "gift_selected": "✅ Подарок выбран.",
-        "mode_show": "👤 Профиль (show name)",
-        "mode_hide": "🕵️ Аноним (hide name)",
-        "confirm_title": "Подтвердите отправку:",
-        "btn_send": "✅ Отправить",
-        "btn_cancel": "✖️ Отмена",
-        "btn_back": "⬅️ Меню",
-        "btn_target": "🎯 Получатель",
-        "btn_comment": "💬 Комментарий",
-        "btn_gift": "🎁 Подарок",
-        "btn_mode": "🔒 Режим",
-        "ask_target": "🎯 Укажите получателя:\n- `me`\n- `@username`\n- `user_id`\n\n✅ Надёжнее всего: @username",
-        "ask_comment": "💬 Введите комментарий (необязательно).\nУдалить: `-`",
-        "pick_price": "🎁 Выберите цену (⭐):",
-        "sending": "⏳ Отправляю...",
-        "sent": "✅ Отправлено!",
-        "cancelled": "❌ Отменено",
-        "creator_only": "⛔ Только автор может подтверждать/отменять.",
-        "already_done": "⚠️ Уже обработано.",
-        "still_sending": "⏳ Уже отправляется...",
-        "inline_help_title": "Как использовать inline",
-        "inline_help_text": "Формат:\n@{bot} 50 @username комментарий\n\nReply-target в inline недоступен.\nДля reply в группе: ответьте на человека и используйте /gift 50 коммент",
-        "reply_target_missing": "⚠️ Target=reply, но reply не найден.\nИспользуйте /gift reply в группе или inline с @username.",
-        "admin_added": "✅ Админ добавлен.",
-        "admin_removed": "✅ Админ удалён.",
-        "admins_list": "👮 Админы:",
-        "lang_set": "✅ Язык установлен: {lang}",
-        "err": "❌ Ошибка: {e}",
-    },
-    "uz": {
-        "no_access": "⛔ Ruxsat yo‘q.",
-        "menu_title": "Tanlang:",
-        "target_set": "✅ Qabul qiluvchi saqlandi.",
-        "comment_set": "✅ Komment saqlandi.",
-        "comment_removed": "✅ Komment o‘chirildi.",
-        "gift_selected": "✅ Sovg‘a tanlandi.",
-        "mode_show": "👤 Profil (show name)",
-        "mode_hide": "🕵️ Anonim (hide name)",
-        "confirm_title": "Yuborishni tasdiqlang:",
-        "btn_send": "✅ Yuborish",
-        "btn_cancel": "✖️ Bekor qilish",
-        "btn_back": "⬅️ Menu",
-        "btn_target": "🎯 Qabul qiluvchi",
-        "btn_comment": "💬 Komment",
-        "btn_gift": "🎁 Sovg‘a",
-        "btn_mode": "🔒 Rejim",
-        "ask_target": "🎯 Qabul qiluvchini yuboring:\n- `me`\n- `@username`\n- `user_id`\n\n✅ Eng ishonchlisi: @username",
-        "ask_comment": "💬 Komment yuboring (ixtiyoriy).\nO‘chirish: `-`",
-        "pick_price": "🎁 Narx tanlang (⭐):",
-        "sending": "⏳ Yuborilyapti...",
-        "sent": "✅ Yuborildi!",
-        "cancelled": "❌ Bekor qilindi",
-        "creator_only": "⛔ Faqat buyruq bergan admin tasdiqlay oladi.",
-        "already_done": "⚠️ Allaqachon bajarilgan.",
-        "still_sending": "⏳ Allaqachon yuborilyapti...",
-        "inline_help_title": "Inline ishlatish",
-        "inline_help_text": "Format:\n@{bot} 50 @username komment\n\nInline’da reply-target bo‘lmaydi.\nReply uchun: guruhda odamga reply qilib /gift 50 komment",
-        "reply_target_missing": "⚠️ Target=reply topilmadi.\nGuruhda /gift reply ishlating yoki inline’da @username bering.",
-        "admin_added": "✅ Admin qo‘shildi.",
-        "admin_removed": "✅ Admin olib tashlandi.",
-        "admins_list": "👮 Adminlar:",
-        "lang_set": "✅ Til o‘zgardi: {lang}",
-        "err": "❌ Xatolik: {e}",
-    },
-    "en": {
-        "no_access": "⛔ No access.",
-        "menu_title": "Choose:",
-        "target_set": "✅ Target saved.",
-        "comment_set": "✅ Comment saved.",
-        "comment_removed": "✅ Comment removed.",
-        "gift_selected": "✅ Gift selected.",
-        "mode_show": "👤 Profile (show name)",
-        "mode_hide": "🕵️ Anonymous (hide name)",
-        "confirm_title": "Confirm sending:",
-        "btn_send": "✅ Send",
-        "btn_cancel": "✖️ Cancel",
-        "btn_back": "⬅️ Menu",
-        "btn_target": "🎯 Target",
-        "btn_comment": "💬 Comment",
-        "btn_gift": "🎁 Gift",
-        "btn_mode": "🔒 Mode",
-        "ask_target": "🎯 Send target:\n- `me`\n- `@username`\n- `user_id`\n\n✅ Best: @username",
-        "ask_comment": "💬 Send comment (optional).\nRemove: `-`",
-        "pick_price": "🎁 Choose price (⭐):",
-        "sending": "⏳ Sending...",
-        "sent": "✅ Sent!",
-        "cancelled": "❌ Cancelled",
-        "creator_only": "⛔ Only the creator can confirm/cancel.",
-        "already_done": "⚠️ Already processed.",
-        "still_sending": "⏳ Already sending...",
-        "inline_help_title": "How to use inline",
-        "inline_help_text": "Format:\n@{bot} 50 @username comment\n\nInline cannot use reply-target.\nFor reply in group: reply to user and use /gift 50 comment",
-        "reply_target_missing": "⚠️ Target=reply not found.\nUse /gift reply in group or inline with @username.",
-        "admin_added": "✅ Admin added.",
-        "admin_removed": "✅ Admin removed.",
-        "admins_list": "👮 Admins:",
-        "lang_set": "✅ Language set: {lang}",
-        "err": "❌ Error: {e}",
-    },
-}
-
-
-def tr(lang: str, key: str, **kwargs) -> str:
-    lang = (lang or DEFAULT_LANG).lower()
-    if lang not in TR:
-        lang = DEFAULT_LANG
-    s = TR[lang].get(key, TR["ru"].get(key, key))
-    if kwargs:
-        try:
-            return s.format(**kwargs)
-        except Exception:
-            return s
-    return s
-
-
-# =========================
-# Gifts (IDs hidden in UI)
+# Gifts catalog (ID ko‘rsatmaymiz)
 # =========================
 @dataclass(frozen=True)
 class GiftItem:
-    id: int
+    gift_id: int
     stars: int
     label: str
 
-
 GIFT_CATALOG: List[GiftItem] = [
-    GiftItem(6028601630662853006, 50, "🍾"),
-    GiftItem(5170521118301225164, 100, "💎"),
-    GiftItem(5170690322832818290, 100, "💍"),
-    GiftItem(5168043875654172773, 100, "🏆"),
-    GiftItem(5170564780938756245, 50, "🚀"),
-    GiftItem(5170314324215857265, 50, "💐"),
-    GiftItem(5170144170496491616, 50, "🎂"),
-    GiftItem(5168103777563050263, 25, "🌹"),
-    GiftItem(5170250947678437525, 25, "🎁"),
-    GiftItem(5170233102089322756, 15, "🧸"),
-    GiftItem(5170145012310081615, 15, "💝"),
-    GiftItem(5922558454332916696, 50, "🎄"),
-    GiftItem(5956217000635139069, 50, "🧸🎩"),
+    GiftItem(6028601630662853006, 50,  "🍾 50★"),
+    GiftItem(5170521118301225164, 100, "💎 100★"),
+    GiftItem(5170690322832818290, 100, "💍 100★"),
+    GiftItem(5168043875654172773, 100, "🏆 100★"),
+    GiftItem(5170564780938756245, 50,  "🚀 50★"),
+    GiftItem(5170314324215857265, 50,  "💐 50★"),
+    GiftItem(5170144170496491616, 50,  "🎂 50★"),
+    GiftItem(5168103777563050263, 25,  "🌹 25★"),
+    GiftItem(5170250947678437525, 25,  "🎁 25★"),
+    GiftItem(5170233102089322756, 15,  "🧸 15★"),
+    GiftItem(5170145012310081615, 15,  "💝 15★"),
+    GiftItem(5922558454332916696, 50,  "🎄 50★"),
+    GiftItem(5956217000635139069, 50,  "🧸(hat) 50★"),
 ]
 
 GIFTS_BY_PRICE: Dict[int, List[GiftItem]] = {}
 GIFTS_BY_ID: Dict[int, GiftItem] = {}
 for g in GIFT_CATALOG:
     GIFTS_BY_PRICE.setdefault(g.stars, []).append(g)
-    GIFTS_BY_ID[g.id] = g
-
+    GIFTS_BY_ID[g.gift_id] = g
 ALLOWED_PRICES = sorted(GIFTS_BY_PRICE.keys())
 
 
-def gifts_up_to(max_stars: int) -> List[GiftItem]:
-    out: List[GiftItem] = []
-    for g in GIFT_CATALOG:
-        if g.stars <= max_stars:
-            out.append(g)
-    out.sort(key=lambda x: (x.stars, x.label))
-    return out
+# =========================
+# Simple i18n (RU default)
+# =========================
+TEXTS = {
+    "ru": {
+        "access_denied": "⛔ Доступ запрещён.",
+        "start": "✅ Панель администратора.\n\nВыберите действие:",
+        "mode_profile": "👤 Профиль (показывать имя)",
+        "mode_anon": "🕵️ Аноним (скрыть имя)",
+        "comment_none": "(без комментария)",
+        "target_none": "(цель не указана)",
+        "set_comment_tip": "💬 Отправьте комментарий.\nУдалить: отправьте `-`",
+        "set_target_tip": "🎯 Отправьте цель:\n- `@username`\n- `id` (число)\n\n✅ Лучше всего: @username",
+        "choose_price": "⭐ Выберите цену:",
+        "choose_gift": "🎁 Выберите подарок за ⭐{price}:",
+        "confirm_title": "Подтвердите отправку:",
+        "confirm_send": "✅ Отправить",
+        "confirm_cancel": "❌ Отмена",
+        "cancelled": "❌ Отменено.",
+        "not_owner": "⚠️ Только создатель команды может подтверждать/отменять.",
+        "already_done": "⚠️ Уже обработано.",
+        "sending": "⏳ Отправляю...",
+        "sent": "✅ Отправлено!",
+        "failed": "❌ Ошибка отправки:\n{err}",
+        "need_reply_or_target": "⚠️ В группе используйте команду как reply.\nПример: ответьте на человека и напишите /gift 50\n\nИли укажите цель явно: /gift @username 50",
+        "admin_added": "✅ Админ добавлен: {uid}",
+        "admin_removed": "✅ Админ удалён: {uid}",
+        "admins_list": "👥 Админы:\n{list}",
+        "lang_set": "✅ Язык установлен: {lang}",
+        "inline_usage": "Напишите: `50 @username` (например: `50 @someone`)",
+        "inline_pick": "Нажмите и подтвердите отправку.",
+    },
+    "uz": {
+        "access_denied": "⛔ Ruxsat yo‘q.",
+        "start": "✅ Admin panel.\n\nTanlang:",
+        "mode_profile": "👤 Profil (ism ko‘rinsin)",
+        "mode_anon": "🕵️ Anonim (ism yashirilsin)",
+        "comment_none": "(komment yo‘q)",
+        "target_none": "(target yo‘q)",
+        "set_comment_tip": "💬 Komment yuboring.\nO‘chirish: `-` yuboring",
+        "set_target_tip": "🎯 Target yuboring:\n- `@username`\n- `id` (raqam)\n\n✅ Eng yaxshi: @username",
+        "choose_price": "⭐ Narxni tanlang:",
+        "choose_gift": "🎁 ⭐{price} uchun sovg‘ani tanlang:",
+        "confirm_title": "Yuborishni tasdiqlang:",
+        "confirm_send": "✅ Yuborish",
+        "confirm_cancel": "❌ Bekor qilish",
+        "cancelled": "❌ Bekor qilindi.",
+        "not_owner": "⚠️ Faqat buyruq bergan admin tasdiqlay oladi.",
+        "already_done": "⚠️ Allaqachon bajarilgan.",
+        "sending": "⏳ Yuborilyapti...",
+        "sent": "✅ Yuborildi!",
+        "failed": "❌ Xatolik:\n{err}",
+        "need_reply_or_target": "⚠️ Guruhda reply qilib ishlating.\nMasalan: odamga reply qiling va yozing: /gift 50\n\nYoki targetni yozing: /gift @username 50",
+        "admin_added": "✅ Admin qo‘shildi: {uid}",
+        "admin_removed": "✅ Admin o‘chirildi: {uid}",
+        "admins_list": "👥 Adminlar:\n{list}",
+        "lang_set": "✅ Til o‘rnatildi: {lang}",
+        "inline_usage": "Shunday yozing: `50 @username` (masalan: `50 @someone`)",
+        "inline_pick": "Tanlang va tasdiqlang.",
+    },
+    "en": {
+        "access_denied": "⛔ Access denied.",
+        "start": "✅ Admin panel.\n\nChoose:",
+        "mode_profile": "👤 Show profile (show name)",
+        "mode_anon": "🕵️ Anonymous (hide name)",
+        "comment_none": "(no comment)",
+        "target_none": "(no target)",
+        "set_comment_tip": "💬 Send comment.\nDelete: send `-`",
+        "set_target_tip": "🎯 Send target:\n- `@username`\n- `id` (number)\n\n✅ Best: @username",
+        "choose_price": "⭐ Choose price:",
+        "choose_gift": "🎁 Choose gift for ⭐{price}:",
+        "confirm_title": "Confirm sending:",
+        "confirm_send": "✅ Send",
+        "confirm_cancel": "❌ Cancel",
+        "cancelled": "❌ Cancelled.",
+        "not_owner": "⚠️ Only the creator admin can confirm/cancel.",
+        "already_done": "⚠️ Already processed.",
+        "sending": "⏳ Sending...",
+        "sent": "✅ Sent!",
+        "failed": "❌ Failed:\n{err}",
+        "need_reply_or_target": "⚠️ In groups: reply to a user and type /gift 50\n\nOr provide target: /gift @username 50",
+        "admin_added": "✅ Admin added: {uid}",
+        "admin_removed": "✅ Admin removed: {uid}",
+        "admins_list": "👥 Admins:\n{list}",
+        "lang_set": "✅ Language set: {lang}",
+        "inline_usage": "Type: `50 @username` (example: `50 @someone`)",
+        "inline_pick": "Pick and confirm.",
+    },
+}
+
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = (lang or "ru").lower()
+    d = TEXTS.get(lang) or TEXTS["ru"]
+    s = d.get(key) or TEXTS["ru"].get(key, key)
+    return s.format(**kwargs)
 
 
 # =========================
-# DB
+# DB: single connection (threads error bo‘lmaydi)
 # =========================
-@asynccontextmanager
-async def db_connect():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA journal_mode=WAL;")
-        await db.execute("PRAGMA synchronous=NORMAL;")
-        await db.execute("PRAGMA foreign_keys=ON;")
-        await db.execute("PRAGMA busy_timeout=5000;")
-        yield db
+class DB:
+    def __init__(self, path: str):
+        self.path = path
+        self.conn: Optional[aiosqlite.Connection] = None
+        self.lock = asyncio.Lock()
 
+    async def start(self):
+        self.conn = await aiosqlite.connect(self.path)
+        self.conn.row_factory = aiosqlite.Row
+        await self.conn.execute("PRAGMA journal_mode=WAL;")
+        await self.conn.execute("PRAGMA synchronous=NORMAL;")
+        await self.conn.execute("PRAGMA foreign_keys=ON;")
+        await self.conn.execute("PRAGMA busy_timeout=5000;")
 
-async def db_init():
-    async with db_connect() as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
+        await self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS admins(
             user_id INTEGER PRIMARY KEY,
-            role TEXT NOT NULL DEFAULT 'admin',   -- owner|admin
-            lang TEXT NOT NULL DEFAULT 'ru',
-            target TEXT DEFAULT 'me',
-            comment TEXT DEFAULT NULL,
-            selected_gift_id INTEGER DEFAULT NULL,
-            hide_name INTEGER NOT NULL DEFAULT 0,
+            role TEXT NOT NULL DEFAULT 'admin', -- owner/admin
+            is_active INTEGER NOT NULL DEFAULT 1,
             created_at INTEGER NOT NULL
         );
         """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS actions (
-            action_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            creator_id INTEGER NOT NULL,
-            chat_id INTEGER DEFAULT NULL,
-            target TEXT NOT NULL,         -- '@user' or '123' or 'reply:chat_id:msg_id:uid:@username?'
-            gift_id INTEGER NOT NULL,
-            stars INTEGER NOT NULL,
+        await self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings(
+            user_id INTEGER PRIMARY KEY,
+            anonymous INTEGER NOT NULL DEFAULT 0,
             comment TEXT DEFAULT NULL,
-            hide_name INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'pending',  -- pending|sending|sent|cancelled|failed
-            error TEXT DEFAULT NULL,
+            target TEXT DEFAULT NULL,
+            lang TEXT NOT NULL DEFAULT 'ru'
+        );
+        """)
+        await self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS actions(
+            token TEXT PRIMARY KEY,
+            creator_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            msg_id INTEGER NOT NULL,
+            target TEXT NOT NULL,
+            gift_id INTEGER NOT NULL,
+            anonymous INTEGER NOT NULL,
+            comment TEXT DEFAULT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', -- pending/sending/sent/cancelled/failed
+            last_error TEXT DEFAULT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
         """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_actions_creator ON actions(creator_id);")
-        await db.commit()
+        await self.conn.commit()
 
-    # ensure owner exists
-    async with db_connect() as db:
+        # ensure owner exists
         now = int(time.time())
-        await db.execute("INSERT OR IGNORE INTO admins(user_id, role, lang, created_at) VALUES(?,?,?,?)",
-                         (OWNER_ID, "owner", DEFAULT_LANG, now))
-        await db.commit()
-
-
-async def db_get_admin(user_id: int) -> Optional[dict]:
-    async with db_connect() as db:
-        cur = await db.execute(
-            "SELECT user_id, role, lang, target, comment, selected_gift_id, hide_name FROM admins WHERE user_id=?",
-            (user_id,)
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO admins(user_id, role, is_active, created_at) VALUES(?,?,?,?)",
+            (OWNER_ID, "owner", 1, now)
         )
-        r = await cur.fetchone()
-        if not r:
-            return None
-        return {
-            "user_id": r[0],
-            "role": r[1],
-            "lang": r[2],
-            "target": r[3] or "me",
-            "comment": r[4],
-            "selected_gift_id": r[5],
-            "hide_name": int(r[6] or 0),
-        }
+        await self.conn.commit()
 
+    async def stop(self):
+        if self.conn:
+            await self.conn.close()
+            self.conn = None
 
-async def db_is_owner(user_id: int) -> bool:
-    a = await db_get_admin(user_id)
-    return bool(a and a["role"] == "owner")
+    async def is_admin(self, user_id: int) -> Tuple[bool, str]:
+        async with self.lock:
+            cur = await self.conn.execute("SELECT role, is_active FROM admins WHERE user_id=?", (user_id,))
+            row = await cur.fetchone()
+            if not row:
+                return False, ""
+            if int(row["is_active"]) != 1:
+                return False, ""
+            return True, str(row["role"])
 
+    async def add_admin(self, user_id: int, role: str = "admin"):
+        now = int(time.time())
+        async with self.lock:
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO admins(user_id, role, is_active, created_at) VALUES(?,?,?,?)",
+                (user_id, role, 1, now)
+            )
+            await self.conn.commit()
 
-async def db_add_admin(user_id: int, role: str = "admin", lang: str = None):
-    now = int(time.time())
-    lang = (lang or DEFAULT_LANG).lower()
-    if lang not in ("uz", "ru", "en"):
-        lang = DEFAULT_LANG
-    async with db_connect() as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO admins(user_id, role, lang, created_at) VALUES(?,?,?,?)",
-            (user_id, role, lang, now)
-        )
-        await db.commit()
+    async def remove_admin(self, user_id: int):
+        async with self.lock:
+            await self.conn.execute("UPDATE admins SET is_active=0 WHERE user_id=?", (user_id,))
+            await self.conn.commit()
 
+    async def list_admins(self) -> List[Tuple[int, str, int]]:
+        async with self.lock:
+            cur = await self.conn.execute("SELECT user_id, role, is_active FROM admins ORDER BY role DESC, user_id ASC")
+            rows = await cur.fetchall()
+            return [(int(r["user_id"]), str(r["role"]), int(r["is_active"])) for r in rows]
 
-async def db_remove_admin(user_id: int):
-    async with db_connect() as db:
-        await db.execute("DELETE FROM admins WHERE user_id=? AND role!='owner'", (user_id,))
-        await db.commit()
+    async def ensure_settings(self, user_id: int):
+        async with self.lock:
+            await self.conn.execute("INSERT OR IGNORE INTO settings(user_id) VALUES(?)", (user_id,))
+            await self.conn.commit()
 
+    async def get_settings(self, user_id: int) -> Tuple[int, Optional[str], Optional[str], str]:
+        async with self.lock:
+            cur = await self.conn.execute(
+                "SELECT anonymous, comment, target, lang FROM settings WHERE user_id=?",
+                (user_id,)
+            )
+            r = await cur.fetchone()
+            if not r:
+                return 0, None, None, "ru"
+            return int(r["anonymous"]), r["comment"], r["target"], str(r["lang"] or "ru")
 
-async def db_list_admins() -> List[dict]:
-    async with db_connect() as db:
-        cur = await db.execute("SELECT user_id, role, lang FROM admins ORDER BY role DESC, user_id ASC")
-        rows = await cur.fetchall()
-    return [{"user_id": r[0], "role": r[1], "lang": r[2]} for r in rows]
+    async def set_lang(self, user_id: int, lang: str):
+        async with self.lock:
+            await self.conn.execute("UPDATE settings SET lang=? WHERE user_id=?", (lang, user_id))
+            await self.conn.commit()
 
+    async def toggle_anonymous(self, user_id: int) -> int:
+        async with self.lock:
+            cur = await self.conn.execute("SELECT anonymous FROM settings WHERE user_id=?", (user_id,))
+            r = await cur.fetchone()
+            curv = int(r["anonymous"] or 0) if r else 0
+            newv = 0 if curv == 1 else 1
+            await self.conn.execute("UPDATE settings SET anonymous=? WHERE user_id=?", (newv, user_id))
+            await self.conn.commit()
+            return newv
 
-async def db_set_admin_lang(user_id: int, lang: str):
-    lang = (lang or DEFAULT_LANG).lower()
-    if lang not in ("uz", "ru", "en"):
-        lang = DEFAULT_LANG
-    async with db_connect() as db:
-        await db.execute("UPDATE admins SET lang=? WHERE user_id=?", (lang, user_id))
-        await db.commit()
+    async def set_comment(self, user_id: int, comment: Optional[str]):
+        async with self.lock:
+            await self.conn.execute("UPDATE settings SET comment=? WHERE user_id=?", (comment, user_id))
+            await self.conn.commit()
 
+    async def set_target(self, user_id: int, target: Optional[str]):
+        async with self.lock:
+            await self.conn.execute("UPDATE settings SET target=? WHERE user_id=?", (target, user_id))
+            await self.conn.commit()
 
-async def db_set_target(user_id: int, target: str):
-    async with db_connect() as db:
-        await db.execute("UPDATE admins SET target=? WHERE user_id=?", (target, user_id))
-        await db.commit()
+    async def create_action(
+        self,
+        token: str,
+        creator_id: int,
+        chat_id: int,
+        msg_id: int,
+        target: str,
+        gift_id: int,
+        anonymous: int,
+        comment: Optional[str],
+    ):
+        now = int(time.time())
+        async with self.lock:
+            await self.conn.execute("""
+            INSERT INTO actions(token, creator_id, chat_id, msg_id, target, gift_id, anonymous, comment, status, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (token, creator_id, chat_id, msg_id, target, gift_id, anonymous, comment, "pending", now, now))
+            await self.conn.commit()
 
+    async def get_action(self, token: str) -> Optional[dict]:
+        async with self.lock:
+            cur = await self.conn.execute("SELECT * FROM actions WHERE token=?", (token,))
+            r = await cur.fetchone()
+            if not r:
+                return None
+            return dict(r)
 
-async def db_set_comment(user_id: int, comment: Optional[str]):
-    async with db_connect() as db:
-        await db.execute("UPDATE admins SET comment=? WHERE user_id=?", (comment, user_id))
-        await db.commit()
+    async def claim_action_sending(self, token: str, user_id: int) -> Tuple[bool, str]:
+        # Atomic: faqat pending bo‘lsa sendingga o‘tadi
+        now = int(time.time())
+        async with self.lock:
+            cur = await self.conn.execute("SELECT creator_id, status FROM actions WHERE token=?", (token,))
+            r = await cur.fetchone()
+            if not r:
+                return False, "missing"
+            if int(r["creator_id"]) != user_id:
+                return False, "not_owner"
+            if str(r["status"]) != "pending":
+                return False, "already"
+            await self.conn.execute(
+                "UPDATE actions SET status='sending', updated_at=? WHERE token=? AND status='pending'",
+                (now, token)
+            )
+            await self.conn.commit()
+            return True, "ok"
 
-
-async def db_set_selected_gift(user_id: int, gift_id: Optional[int]):
-    async with db_connect() as db:
-        await db.execute("UPDATE admins SET selected_gift_id=? WHERE user_id=?", (gift_id, user_id))
-        await db.commit()
-
-
-async def db_toggle_hide_name(user_id: int) -> int:
-    async with db_connect() as db:
-        cur = await db.execute("SELECT hide_name FROM admins WHERE user_id=?", (user_id,))
-        r = await cur.fetchone()
-        cur_val = int((r[0] if r else 0) or 0)
-        new_val = 0 if cur_val == 1 else 1
-        await db.execute("UPDATE admins SET hide_name=? WHERE user_id=?", (new_val, user_id))
-        await db.commit()
-        return new_val
-
-
-async def db_create_action(
-    creator_id: int,
-    chat_id: Optional[int],
-    target: str,
-    gift: GiftItem,
-    comment: Optional[str],
-    hide_name: int
-) -> int:
-    now = int(time.time())
-    async with db_connect() as db:
-        cur = await db.execute("""
-            INSERT INTO actions(creator_id, chat_id, target, gift_id, stars, comment, hide_name, status, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
-        """, (creator_id, chat_id, target, gift.id, gift.stars, comment, hide_name, "pending", now, now))
-        await db.commit()
-        return int(cur.lastrowid)
-
-
-async def db_get_action(action_id: int) -> Optional[dict]:
-    async with db_connect() as db:
-        cur = await db.execute("""
-            SELECT action_id, creator_id, chat_id, target, gift_id, stars, comment, hide_name, status, error
-            FROM actions WHERE action_id=?
-        """, (action_id,))
-        r = await cur.fetchone()
-        if not r:
-            return None
-        return {
-            "action_id": r[0],
-            "creator_id": r[1],
-            "chat_id": r[2],
-            "target": r[3],
-            "gift_id": r[4],
-            "stars": r[5],
-            "comment": r[6],
-            "hide_name": int(r[7] or 0),
-            "status": r[8],
-            "error": r[9],
-        }
-
-
-async def db_try_lock_sending(action_id: int) -> Tuple[bool, str]:
-    """
-    atomically switch pending -> sending
-    returns (ok, status)
-    """
-    now = int(time.time())
-    async with db_connect() as db:
-        cur = await db.execute("SELECT status FROM actions WHERE action_id=?", (action_id,))
-        row = await cur.fetchone()
-        if not row:
-            return False, "missing"
-        status = row[0]
-        if status == "sending":
-            return False, "sending"
-        if status != "pending":
-            return False, status
-
-        await db.execute("""
-            UPDATE actions SET status='sending', updated_at=? 
-            WHERE action_id=? AND status='pending'
-        """, (now, action_id))
-        await db.commit()
-
-        # verify updated
-        cur2 = await db.execute("SELECT status FROM actions WHERE action_id=?", (action_id,))
-        row2 = await cur2.fetchone()
-        new_status = row2[0] if row2 else "missing"
-        return (new_status == "sending"), new_status
-
-
-async def db_mark_action(action_id: int, status: str, error: Optional[str] = None):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            UPDATE actions SET status=?, error=?, updated_at=? WHERE action_id=?
-        """, (status, error, now, action_id))
-        await db.commit()
+    async def mark_action(self, token: str, status: str, err: Optional[str] = None):
+        now = int(time.time())
+        async with self.lock:
+            await self.conn.execute(
+                "UPDATE actions SET status=?, last_error=?, updated_at=? WHERE token=?",
+                (status, err, now, token)
+            )
+            await self.conn.commit()
 
 
 # =========================
-# Helpers
-# =========================
-def normalize_target(text: str) -> str:
-    t = (text or "").strip()
-    if not t:
-        return "me"
-    if t.lower() == "me":
-        return "me"
-    if t.startswith("@"):
-        return t
-    if t.isdigit():
-        return t
-    return "@" + t
-
-
-def safe_comment(text: Optional[str]) -> Optional[str]:
-    if text is None:
-        return None
-    t = (text or "").strip()
-    if not t:
-        return None
-    if len(t) > 250:
-        t = t[:250]
-    return t
-
-
-def fmt_gift(g: GiftItem) -> str:
-    # ID ko'rsatmaymiz
-    return f"{g.label}  ⭐{g.stars}"
-
-
-def fmt_mode(lang: str, hide_name: int) -> str:
-    return tr(lang, "mode_hide") if hide_name == 1 else tr(lang, "mode_show")
-
-
-def parse_inline_query(q: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
-    """
-    INLINE format (target required):
-      "50 @username comment..."
-      "50 123456 comment..."
-      "50 me comment..."
-    """
-    q = (q or "").strip()
-    if not q:
-        return None, None, None
-
-    parts = q.split()
-    if not parts[0].isdigit():
-        return None, None, None
-
-    max_stars = int(parts[0])
-    if len(parts) < 2:
-        return max_stars, None, None
-
-    target_raw = parts[1].strip()
-    if not (target_raw.startswith("@") or target_raw.isdigit() or target_raw.lower() == "me"):
-        return max_stars, None, safe_comment(" ".join(parts[1:]))
-
-    target = normalize_target(target_raw)
-    comment = safe_comment(" ".join(parts[2:]) if len(parts) >= 3 else None)
-    return max_stars, target, comment
-
-
-# =========================
-# Telethon Relayer
+# Relayer (Telethon)
 # =========================
 class Relayer:
     def __init__(self):
@@ -535,13 +404,16 @@ class Relayer:
             retry_delay=2,
             auto_reconnect=True,
         )
-        self._lock = asyncio.Lock()
+        self.lock = asyncio.Lock()
 
     async def start(self):
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            raise RuntimeError("RELAYER_SESSION invalid. QR bilan qayta session oling.")
-        return await self.client.get_me()
+        try:
+            await self.client.connect()
+            if not await self.client.is_user_authorized():
+                raise RuntimeError("RELAYER_SESSION invalid. Yangi session oling.")
+            return await self.client.get_me()
+        except AuthKeyDuplicatedError:
+            raise
 
     async def stop(self):
         await self.client.disconnect()
@@ -566,19 +438,24 @@ class Relayer:
         hide_name: bool,
     ) -> bool:
         """
-        Returns True if comment attached, False if fallback comment-less send happened.
+        return True  => comment qo‘shildi
+        return False => comment qabul qilinmadi, comment-siz yuborildi
         """
-        async with self._lock:
-            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
+        async with self.lock:
+            # can send?
+            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.gift_id))
             if isinstance(can, types.payments.CheckCanSendGiftResultFail):
                 reason = getattr(can.reason, "text", None) or str(can.reason)
                 raise RuntimeError(f"Can't send gift: {reason}")
 
+            # resolve entity
             try:
                 peer = await self.client.get_input_entity(target)
             except Exception:
-                # user_id ba'zan ishlamaydi
-                raise RuntimeError("Cannot resolve target. Use @username or receiver should message relayer once.")
+                raise RuntimeError(
+                    "Target topilmadi. Eng yaxshi yechim: @username ishlating.\n"
+                    "Agar username yo‘q bo‘lsa, qabul qiluvchi relayerga 1 marta yozsin."
+                )
 
             cleaned = self._clean_comment(comment)
             msg_obj = None
@@ -586,13 +463,14 @@ class Relayer:
                 msg_obj = types.TextWithEntities(text=cleaned, entities=[])
 
             extra = {}
+            # NOTE: Telegram ba’zi holatlarda baribir nom ko‘rsatishi mumkin (Telegram cheklovi).
             if hide_name:
                 extra["hide_name"] = True
 
             async def _try_send(message_obj):
                 invoice = types.InputInvoiceStarGift(
                     peer=peer,
-                    gift_id=gift.id,
+                    gift_id=gift.gift_id,
                     message=message_obj,
                     **extra
                 )
@@ -607,7 +485,7 @@ class Relayer:
                 await _try_send(msg_obj)
                 return True
             except RPCError as e:
-                # comment invalid => retry without comment
+                # comment invalid bo‘lsa fallback
                 if "STARGIFT_MESSAGE_INVALID" in str(e):
                     await _try_send(None)
                     return False
@@ -615,115 +493,115 @@ class Relayer:
 
 
 # =========================
-# Bot UI (inline keyboards)
+# Bot UI helpers
 # =========================
-def menu_kb(lang: str, hide_name: int) -> InlineKeyboardMarkup:
+def kb_main(lang: str, anonymous: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "btn_target"), callback_data="menu:target")
-    kb.button(text=tr(lang, "btn_comment"), callback_data="menu:comment")
-    kb.button(text=tr(lang, "btn_gift"), callback_data="menu:gift")
-    kb.button(text=f"{tr(lang, 'btn_mode')} · {fmt_mode(lang, hide_name)}", callback_data="menu:mode")
-    kb.adjust(2, 2)
+    kb.button(text="🎁 Gift", callback_data="m:gift")
+    kb.button(text="🎯 Target", callback_data="m:target")
+    kb.button(text="💬 Comment", callback_data="m:comment")
+    kb.button(
+        text=(t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")),
+        callback_data="m:toggle"
+    )
+    kb.button(text="🌐 RU/UZ/EN", callback_data="m:lang")
+    kb.adjust(2, 2, 1)
     return kb.as_markup()
 
-
-def back_kb(lang: str) -> InlineKeyboardMarkup:
+def kb_lang() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "btn_back"), callback_data="menu:home")
+    kb.button(text="RU", callback_data="lang:ru")
+    kb.button(text="UZ", callback_data="lang:uz")
+    kb.button(text="EN", callback_data="lang:en")
+    kb.button(text="⬅️", callback_data="m:home")
+    kb.adjust(3, 1)
     return kb.as_markup()
 
-
-def price_kb(lang: str) -> InlineKeyboardMarkup:
+def kb_prices(lang: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for p in ALLOWED_PRICES:
-        kb.button(text=f"⭐ {p}", callback_data=f"price:{p}")
-    kb.button(text=tr(lang, "btn_back"), callback_data="menu:home")
+        kb.button(text=f"⭐ {p}", callback_data=f"p:{p}")
+    kb.button(text="⬅️", callback_data="m:home")
     kb.adjust(2, 2, 1)
     return kb.as_markup()
 
-
-def gifts_kb(lang: str, price: int) -> InlineKeyboardMarkup:
+def kb_gifts(lang: str, price: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for g in GIFTS_BY_PRICE.get(price, []):
-        kb.button(text=f"{g.label} ⭐{g.stars}", callback_data=f"gift:{g.id}")
-    kb.button(text=tr(lang, "btn_back"), callback_data="menu:gift")
-    kb.adjust(2, 2, 1)
+        # ID ko‘rsatmaymiz
+        kb.button(text=f"{g.label}", callback_data=f"g:{g.gift_id}")
+    kb.button(text="⬅️", callback_data="m:gift")
+    kb.adjust(1)
     return kb.as_markup()
 
-
-def action_kb(lang: str, action_id: int) -> InlineKeyboardMarkup:
+def kb_confirm(lang: str, token: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr(lang, "btn_send"), callback_data=f"act:send:{action_id}")
-    kb.button(text=tr(lang, "btn_cancel"), callback_data=f"act:cancel:{action_id}")
-    kb.adjust(2)
+    kb.button(text=t(lang, "confirm_send"), callback_data=f"a:send:{token}")
+    kb.button(text=t(lang, "confirm_cancel"), callback_data=f"a:cancel:{token}")
+    kb.adjust(1, 1)
     return kb.as_markup()
 
 
-# =========================
-# Safe edit (fix “message is not modified” + clear markup)
-# =========================
-async def safe_edit(c: CallbackQuery, text: str, reply_markup: Optional[InlineKeyboardMarkup]):
+async def safe_edit(msg: Message, text: str, reply_markup: Optional[InlineKeyboardMarkup]):
+    """
+    Telegram: message is not modified xatosini yutib yuboradi.
+    """
     try:
-        if c.message:
-            await c.message.edit_text(text, reply_markup=reply_markup)
-            if reply_markup is None:
-                # some clients keep old markup, so clear again
-                try:
-                    await c.message.edit_reply_markup(reply_markup=None)
-                except Exception:
-                    pass
-        else:
-            await bot.edit_message_text(inline_message_id=c.inline_message_id, text=text, reply_markup=reply_markup)
-            if reply_markup is None:
-                try:
-                    await bot.edit_message_reply_markup(inline_message_id=c.inline_message_id, reply_markup=None)
-                except Exception:
-                    pass
-    except Exception as e:
+        await msg.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
         if "message is not modified" in str(e):
             return
         raise
 
 
 # =========================
-# Render status
+# Target parsing
 # =========================
-async def render_status(admin: dict) -> str:
-    lang = admin["lang"]
-    target = admin["target"]
-    comment = admin["comment"]
-    hide_name = admin["hide_name"]
-    sel = admin["selected_gift_id"]
+def normalize_target(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.startswith("@"):
+        return s
+    if s.isdigit():
+        return s
+    # "username" kelsa @ qo‘shamiz
+    return "@" + s
 
-    gift_txt = "(not selected)"
-    if sel and sel in GIFTS_BY_ID:
-        gift_txt = fmt_gift(GIFTS_BY_ID[sel])
-
-    cm = comment if comment else "(no comment)"
-    mode_txt = fmt_mode(lang, hide_name)
-
-    return (
-        f"{tr(lang, 'menu_title')}\n\n"
-        f"🎁 {gift_txt}\n"
-        f"🎯 {target}\n"
-        f"🔒 {mode_txt}\n"
-        f"💬 {cm}\n"
-    )
+def target_from_reply(reply: Message) -> Optional[str]:
+    if not reply or not reply.from_user:
+        return None
+    if reply.from_user.username:
+        return "@" + reply.from_user.username
+    return str(reply.from_user.id)
 
 
 # =========================
 # App objects
 # =========================
 bot = Bot(BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
+
+db = DB(DB_PATH)
 relayer = Relayer()
 
+# Simple “waiting input” holatlari (yengil)
+WAITING_COMMENT: set[int] = set()
+WAITING_TARGET: set[int] = set()
+
 
 # =========================
-# Access guard
+# Admin check wrappers
 # =========================
-async def require_admin(user_id: int) -> Optional[dict]:
-    return await db_get_admin(user_id)
+async def require_admin(user_id: int) -> Tuple[bool, str, str]:
+    ok, role = await db.is_admin(user_id)
+    await db.ensure_settings(user_id)
+    anon, comment, target, lang = await db.get_settings(user_id)
+    if not ok:
+        return False, role, lang
+    return True, role, lang
 
 
 # =========================
@@ -731,427 +609,591 @@ async def require_admin(user_id: int) -> Optional[dict]:
 # =========================
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
-    a = await require_admin(m.from_user.id)
-    if not a:
-        return await m.answer(tr(DEFAULT_LANG, "no_access"))
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(lang, "access_denied"))
 
-    text = await render_status(a)
-    await m.answer(text, reply_markup=menu_kb(a["lang"], a["hide_name"]))
-
-
-@dp.message(Command("menu"))
-async def cmd_menu(m: Message):
-    a = await require_admin(m.from_user.id)
-    if not a:
-        return await m.answer(tr(DEFAULT_LANG, "no_access"))
-
-    text = await render_status(a)
-    await m.answer(text, reply_markup=menu_kb(a["lang"], a["hide_name"]))
+    anon, comment, target, lang = await db.get_settings(m.from_user.id)
+    await m.answer(t(lang, "start"), reply_markup=kb_main(lang, anon))
 
 
-@dp.message(Command("lang"))
-async def cmd_lang(m: Message):
-    a = await require_admin(m.from_user.id)
-    if not a:
-        return await m.answer(tr(DEFAULT_LANG, "no_access"))
-
-    parts = (m.text or "").split()
-    if len(parts) < 2:
-        return await m.answer("Usage: /lang uz|ru|en")
-
-    new_lang = parts[1].strip().lower()
-    await db_set_admin_lang(m.from_user.id, new_lang)
-    a = await db_get_admin(m.from_user.id)
-    await m.answer(tr(a["lang"], "lang_set", lang=new_lang))
-
-
-# Owner admin management
 @dp.message(Command("admins"))
 async def cmd_admins(m: Message):
-    a = await require_admin(m.from_user.id)
-    if not a:
-        return await m.answer(tr(DEFAULT_LANG, "no_access"))
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(lang, "access_denied"))
+    if role != "owner":
+        return await m.answer(t(lang, "access_denied"))
 
-    rows = await db_list_admins()
-    lines = [tr(a["lang"], "admins_list")]
-    for r in rows:
-        lines.append(f"- {r['user_id']} ({r['role']}, {r['lang']})")
-    await m.answer("\n".join(lines))
+    rows = await db.list_admins()
+    lines = []
+    for uid, r, active in rows:
+        st = "✅" if active == 1 else "⛔"
+        lines.append(f"{st} {uid} ({r})")
+    await m.answer(t(lang, "admins_list", list="\n".join(lines) if lines else "-"))
 
 
 @dp.message(Command("admin_add"))
 async def cmd_admin_add(m: Message):
-    if not await db_is_owner(m.from_user.id):
-        return await m.answer(tr(DEFAULT_LANG, "no_access"))
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(lang, "access_denied"))
+    if role != "owner":
+        return await m.answer(t(lang, "access_denied"))
 
-    uid = None
-    if m.reply_to_message and m.reply_to_message.from_user:
-        uid = m.reply_to_message.from_user.id
-    else:
-        parts = (m.text or "").split()
-        if len(parts) >= 2 and parts[1].isdigit():
-            uid = int(parts[1])
-
-    if not uid:
-        return await m.answer("Usage: reply to user + /admin_add  OR /admin_add <user_id>")
-
-    await db_add_admin(uid, role="admin", lang=DEFAULT_LANG)
-    await m.answer(tr(DEFAULT_LANG, "admin_added") + f" ({uid})")
+    parts = (m.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await m.answer("Usage: /admin_add 123456789")
+    uid = int(parts[1])
+    await db.add_admin(uid, "admin")
+    await m.answer(t(lang, "admin_added", uid=uid))
 
 
 @dp.message(Command("admin_del"))
 async def cmd_admin_del(m: Message):
-    if not await db_is_owner(m.from_user.id):
-        return await m.answer(tr(DEFAULT_LANG, "no_access"))
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(lang, "access_denied"))
+    if role != "owner":
+        return await m.answer(t(lang, "access_denied"))
 
-    uid = None
-    if m.reply_to_message and m.reply_to_message.from_user:
-        uid = m.reply_to_message.from_user.id
-    else:
-        parts = (m.text or "").split()
-        if len(parts) >= 2 and parts[1].isdigit():
-            uid = int(parts[1])
-
-    if not uid:
-        return await m.answer("Usage: reply to user + /admin_del  OR /admin_del <user_id>")
-
-    await db_remove_admin(uid)
-    await m.answer(tr(DEFAULT_LANG, "admin_removed") + f" ({uid})")
-
-
-# Group-friendly command: reply to someone and send gift
-@dp.message(Command("gift"))
-async def cmd_gift(m: Message):
-    a = await require_admin(m.from_user.id)
-    if not a:
-        return
-
-    lang = a["lang"]
-
-    # /gift <max_stars> [target] [comment...]
     parts = (m.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        return await m.answer("Usage: /gift 50 [@username|id|me] [comment...]")
+        return await m.answer("Usage: /admin_del 123456789")
+    uid = int(parts[1])
+    if uid == OWNER_ID:
+        return await m.answer("Owner’ni o‘chira olmaysiz.")
+    await db.remove_admin(uid)
+    await m.answer(t(lang, "admin_removed", uid=uid))
 
-    max_stars = int(parts[1])
-    target: Optional[str] = None
-    comment: Optional[str] = None
 
-    if len(parts) >= 3:
-        # if 3rd looks like target
-        t = parts[2].strip()
-        if t.startswith("@") or t.isdigit() or t.lower() == "me":
-            target = normalize_target(t)
-            comment = safe_comment(" ".join(parts[3:]) if len(parts) >= 4 else None)
-        else:
-            comment = safe_comment(" ".join(parts[2:]))
+@dp.message(Command("gift"))
+async def cmd_gift(m: Message):
+    """
+    Guruhda reply qilib ishlatish oson:
+    - odamga reply qiling -> /gift 50
+    Yoki:
+    - /gift @username 50
+    """
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(lang, "access_denied"))
 
-    # reply target if no explicit target
-    if not target and m.reply_to_message and m.reply_to_message.from_user:
-        ru = m.reply_to_message.from_user
-        if ru.username:
-            target = f"@{ru.username}"
-        else:
-            target = str(ru.id)
+    await db.ensure_settings(m.from_user.id)
+    anon, comment, target, lang = await db.get_settings(m.from_user.id)
 
-    if not target:
-        return await m.answer(tr(lang, "reply_target_missing"))
+    # /gift @user 50  yoki /gift 50 @user
+    raw = (m.text or "").split()
+    price = None
+    explicit_target = None
 
-    gifts = gifts_up_to(max_stars)
-    if not gifts:
-        return await m.answer("No gifts for that stars limit.")
+    for token in raw[1:]:
+        if token.isdigit() and int(token) in ALLOWED_PRICES:
+            price = int(token)
+        if token.startswith("@") or token.isdigit():
+            # bu yerda “price” ham digit bo‘lishi mumkin, shuning uchun price bilan to‘qnashsa keyin tekshiramiz
+            pass
 
-    # pick cheapest by default (or you can improve: show list)
-    gift = gifts[0]
+    # explicit target qidiramiz
+    # (price tokenini target deb qabul qilmaslik uchun)
+    for token in raw[1:]:
+        if price is not None and token.isdigit() and int(token) == price:
+            continue
+        if token.startswith("@") or (token.isdigit() and len(token) >= 5):
+            explicit_target = normalize_target(token)
+            break
 
-    act_id = await db_create_action(
-        creator_id=m.from_user.id,
-        chat_id=m.chat.id,
-        target=target,
-        gift=gift,
-        comment=comment,
-        hide_name=a["hide_name"],
-    )
+    reply_target = target_from_reply(m.reply_to_message) if m.reply_to_message else None
 
-    cm = comment if comment else "(no comment)"
-    msg = (
-        f"🎁 {fmt_gift(gift)}\n"
-        f"🎯 {target}\n"
-        f"🔒 {fmt_mode(lang, a['hide_name'])}\n"
-        f"💬 {cm}\n\n"
-        f"{tr(lang, 'confirm_title')}"
-    )
-    await m.answer(msg, reply_markup=action_kb(lang, act_id))
+    final_target = explicit_target or reply_target or target  # avval explicit, keyin reply, keyin saqlangan target
+    if not final_target:
+        return await m.answer(t(lang, "need_reply_or_target"))
+
+    # targetni saqlab qo‘yamiz (keyin menu’dan ham ishlaydi)
+    await db.set_target(m.from_user.id, final_target)
+
+    # agar price berilgan bo‘lsa, shu narxni ochib yuboramiz; bo‘lmasa price menu
+    if price:
+        return await m.answer(t(lang, "choose_gift", price=price), reply_markup=kb_gifts(lang, price))
+    return await m.answer(t(lang, "choose_price"), reply_markup=kb_prices(lang))
 
 
 # =========================
 # Menu callbacks
 # =========================
-@dp.callback_query(F.data.startswith("menu:"))
-async def menu_router(c: CallbackQuery):
-    a = await require_admin(c.from_user.id)
-    if not a:
-        return await c.answer(tr(DEFAULT_LANG, "no_access"), show_alert=True)
+@dp.callback_query(F.data.startswith("m:"))
+async def cb_menu(c: CallbackQuery):
+    ok, role, lang = await require_admin(c.from_user.id)
+    if not ok:
+        await c.answer(t(lang, "access_denied"), show_alert=True)
+        return
 
-    lang = a["lang"]
-    cmd = c.data.split(":", 1)[1]
+    anon, comment, target, lang = await db.get_settings(c.from_user.id)
+    action = c.data.split(":", 1)[1]
 
     await c.answer()
 
-    if cmd == "home":
-        await safe_edit(c, await render_status(a), menu_kb(lang, a["hide_name"]))
+    if action == "home":
+        WAITING_COMMENT.discard(c.from_user.id)
+        WAITING_TARGET.discard(c.from_user.id)
+        await safe_edit(c.message, t(lang, "start"), kb_main(lang, anon))
         return
 
-    if cmd == "target":
-        await safe_edit(c, tr(lang, "ask_target"), back_kb(lang))
+    if action == "toggle":
+        newv = await db.toggle_anonymous(c.from_user.id)
+        anon, comment, target, lang = await db.get_settings(c.from_user.id)
+        await safe_edit(c.message, t(lang, "start"), kb_main(lang, anon))
         return
 
-    if cmd == "comment":
-        await safe_edit(c, tr(lang, "ask_comment"), back_kb(lang))
+    if action == "comment":
+        WAITING_TARGET.discard(c.from_user.id)
+        WAITING_COMMENT.add(c.from_user.id)
+        await safe_edit(c.message, t(lang, "set_comment_tip"), None)
         return
 
-    if cmd == "gift":
-        await safe_edit(c, tr(lang, "pick_price"), price_kb(lang))
+    if action == "target":
+        WAITING_COMMENT.discard(c.from_user.id)
+        WAITING_TARGET.add(c.from_user.id)
+        await safe_edit(c.message, t(lang, "set_target_tip"), None)
         return
 
-    if cmd == "mode":
-        new_val = await db_toggle_hide_name(c.from_user.id)
-        a2 = await db_get_admin(c.from_user.id)
-        await safe_edit(c, await render_status(a2), menu_kb(lang, a2["hide_name"]))
+    if action == "gift":
+        WAITING_COMMENT.discard(c.from_user.id)
+        WAITING_TARGET.discard(c.from_user.id)
+        await safe_edit(c.message, t(lang, "choose_price"), kb_prices(lang))
+        return
+
+    if action == "lang":
+        await safe_edit(c.message, "🌐 Choose language:", kb_lang())
         return
 
 
-# Target/comment input (simple: user writes text after pressing)
+@dp.callback_query(F.data.startswith("lang:"))
+async def cb_lang(c: CallbackQuery):
+    ok, role, lang0 = await require_admin(c.from_user.id)
+    if not ok:
+        await c.answer(t(lang0, "access_denied"), show_alert=True)
+        return
+    await c.answer()
+    lang = c.data.split(":", 1)[1]
+    if lang not in ("ru", "uz", "en"):
+        lang = "ru"
+    await db.set_lang(c.from_user.id, lang)
+    anon, comment, target, lang = await db.get_settings(c.from_user.id)
+    await safe_edit(c.message, t(lang, "lang_set", lang=lang.upper()), kb_main(lang, anon))
+
+
+# =========================
+# Comment/Target input
+# =========================
 @dp.message()
-async def any_text_router(m: Message):
-    a = await require_admin(m.from_user.id)
-    if not a:
+async def any_text_input(m: Message):
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
         return
 
-    # Heuristic:
-    # If message starts with "@" or "me" or digit -> treat as target update
-    # If message is "-" -> remove comment
-    # Else -> treat as comment update
-    txt = (m.text or "").strip()
-    lang = a["lang"]
+    anon, comment, target, lang = await db.get_settings(m.from_user.id)
 
-    if not txt:
-        return
+    if m.from_user.id in WAITING_COMMENT:
+        WAITING_COMMENT.discard(m.from_user.id)
+        raw = (m.text or "").strip()
+        if raw == "-" or raw.lower() in ("off", "none", "null"):
+            await db.set_comment(m.from_user.id, None)
+        else:
+            # max 250 (bot tarafida), relayerda 120
+            await db.set_comment(m.from_user.id, raw[:250])
+        anon, comment, target, lang = await db.get_settings(m.from_user.id)
+        return await m.answer(t(lang, "start"), reply_markup=kb_main(lang, anon))
 
-    if txt == "-":
-        await db_set_comment(m.from_user.id, None)
-        a2 = await db_get_admin(m.from_user.id)
-        return await m.answer(tr(lang, "comment_removed") + "\n\n" + await render_status(a2),
-                              reply_markup=menu_kb(lang, a2["hide_name"]))
-
-    if txt.lower() == "me" or txt.startswith("@") or txt.isdigit():
-        await db_set_target(m.from_user.id, normalize_target(txt))
-        a2 = await db_get_admin(m.from_user.id)
-        return await m.answer(tr(lang, "target_set") + "\n\n" + await render_status(a2),
-                              reply_markup=menu_kb(lang, a2["hide_name"]))
-
-    await db_set_comment(m.from_user.id, safe_comment(txt))
-    a2 = await db_get_admin(m.from_user.id)
-    return await m.answer(tr(lang, "comment_set") + "\n\n" + await render_status(a2),
-                          reply_markup=menu_kb(lang, a2["hide_name"]))
+    if m.from_user.id in WAITING_TARGET:
+        WAITING_TARGET.discard(m.from_user.id)
+        trg = normalize_target(m.text or "")
+        await db.set_target(m.from_user.id, trg)
+        anon, comment, target, lang = await db.get_settings(m.from_user.id)
+        return await m.answer(t(lang, "start"), reply_markup=kb_main(lang, anon))
 
 
 # =========================
-# Price/Gift selection callbacks
+# Price/Gift selection
 # =========================
-@dp.callback_query(F.data.startswith("price:"))
+@dp.callback_query(F.data.startswith("p:"))
 async def cb_price(c: CallbackQuery):
-    a = await require_admin(c.from_user.id)
-    if not a:
-        return await c.answer(tr(DEFAULT_LANG, "no_access"), show_alert=True)
-
-    lang = a["lang"]
+    ok, role, lang = await require_admin(c.from_user.id)
+    if not ok:
+        await c.answer(t(lang, "access_denied"), show_alert=True)
+        return
     await c.answer()
+    anon, comment, target, lang = await db.get_settings(c.from_user.id)
+
     price = int(c.data.split(":", 1)[1])
     if price not in GIFTS_BY_PRICE:
-        return await safe_edit(c, tr(lang, "pick_price"), price_kb(lang))
-    await safe_edit(c, f"⭐ {price}", gifts_kb(lang, price))
+        return await safe_edit(c.message, "No such price.", kb_prices(lang))
+    await safe_edit(c.message, t(lang, "choose_gift", price=price), kb_gifts(lang, price))
 
 
-@dp.callback_query(F.data.startswith("gift:"))
+@dp.callback_query(F.data.startswith("g:"))
 async def cb_gift(c: CallbackQuery):
-    a = await require_admin(c.from_user.id)
-    if not a:
-        return await c.answer(tr(DEFAULT_LANG, "no_access"), show_alert=True)
-
-    lang = a["lang"]
+    ok, role, lang = await require_admin(c.from_user.id)
+    if not ok:
+        await c.answer(t(lang, "access_denied"), show_alert=True)
+        return
     await c.answer()
 
-    gid = int(c.data.split(":", 1)[1])
-    if gid not in GIFTS_BY_ID:
-        return await safe_edit(c, tr(lang, "pick_price"), price_kb(lang))
+    gift_id = int(c.data.split(":", 1)[1])
+    gift = GIFTS_BY_ID.get(gift_id)
+    if not gift:
+        return await safe_edit(c.message, "Gift not found.", None)
 
-    await db_set_selected_gift(c.from_user.id, gid)
-    a2 = await db_get_admin(c.from_user.id)
+    anon, comment, target, lang = await db.get_settings(c.from_user.id)
+    if not target:
+        return await safe_edit(c.message, t(lang, "need_reply_or_target"), None)
 
-    g = GIFTS_BY_ID[gid]
-    txt = f"{tr(lang, 'gift_selected')}\n\n🎁 {fmt_gift(g)}\n\n{tr(lang, 'menu_title')}"
-    await safe_edit(c, txt, menu_kb(lang, a2["hide_name"]))
+    # ACTION yaratamiz (token DB’da turadi => 2 marta bosib 2 marta yuborib bo‘lmaydi)
+    token = secrets.token_urlsafe(8)
+    # Confirm message shu chatda bo‘ladi
+    confirm_text = (
+        f"🎁 {gift.label}  ⭐{gift.stars}\n"
+        f"🎯 {target}\n"
+        f"🔒 {(t(lang, 'mode_anon') if anon == 1 else t(lang, 'mode_profile'))}\n"
+        f"💬 {comment if comment else t(lang, 'comment_none')}\n\n"
+        f"{t(lang, 'confirm_title')}"
+    )
+
+    # yangi message jo‘natamiz (edit qilish oson bo‘lishi uchun)
+    msg = await c.message.answer(confirm_text, reply_markup=kb_confirm(lang, token))
+    await db.create_action(
+        token=token,
+        creator_id=c.from_user.id,
+        chat_id=msg.chat.id,
+        msg_id=msg.message_id,
+        target=target,
+        gift_id=gift.gift_id,
+        anonymous=anon,
+        comment=comment,
+    )
 
 
 # =========================
-# Inline mode (admins only)
+# Confirm/Cancel
 # =========================
-INLINE_LIMIT = 30
+@dp.callback_query(F.data.startswith("a:"))
+async def cb_action(c: CallbackQuery):
+    ok, role, lang = await require_admin(c.from_user.id)
+    if not ok:
+        await c.answer(t(lang, "access_denied"), show_alert=True)
+        return
+
+    await c.answer()
+
+    parts = c.data.split(":")
+    if len(parts) != 3:
+        return
+    kind, token = parts[1], parts[2]
+
+    action = await db.get_action(token)
+    if not action:
+        return await c.answer("Missing / expired.", show_alert=True)
+
+    # faqat creator tasdiqlaydi/bekor qiladi
+    if int(action["creator_id"]) != c.from_user.id:
+        return await c.answer(t(lang, "not_owner"), show_alert=True)
+
+    anon, comment, target, lang = await db.get_settings(c.from_user.id)
+
+    if kind == "cancel":
+        if action["status"] in ("sent", "cancelled", "failed"):
+            return await c.answer(t(lang, "already_done"), show_alert=True)
+        await db.mark_action(token, "cancelled")
+        # message "Cancelled" bo‘lsin va tugmalar ketadi
+        try:
+            await c.message.edit_text(t(lang, "cancelled"), reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        return
+
+    if kind == "send":
+        # CLAIM (pending -> sending) => double send yo‘q!
+        ok_claim, why = await db.claim_action_sending(token, c.from_user.id)
+        if not ok_claim:
+            if why == "already":
+                return await c.answer(t(lang, "already_done"), show_alert=True)
+            if why == "not_owner":
+                return await c.answer(t(lang, "not_owner"), show_alert=True)
+            return await c.answer("Error.", show_alert=True)
+
+        # UI: "Sending..."
+        try:
+            await c.message.edit_text(t(lang, "sending"), reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
+        try:
+            gift = GIFTS_BY_ID.get(int(action["gift_id"]))
+            if not gift:
+                raise RuntimeError("Gift not found in catalog")
+
+            target_str = str(action["target"])
+            # Telethon target type
+            if target_str.startswith("@"):
+                target_t: Union[str, int] = target_str
+            elif target_str.isdigit():
+                target_t = int(target_str)
+            else:
+                target_t = target_str
+
+            comment_txt = action["comment"]
+            hide_name = int(action["anonymous"]) == 1
+
+            comment_attached = await relayer.send_star_gift(
+                target=target_t,
+                gift=gift,
+                comment=comment_txt,
+                hide_name=hide_name,
+            )
+
+            await db.mark_action(token, "sent")
+
+            # Final message
+            done = t(lang, "sent")
+            if comment_txt and not comment_attached:
+                done += "\n⚠️ Komment qabul qilinmadi (comment-siz yuborildi)."
+
+            try:
+                await c.message.edit_text(done, reply_markup=None)
+            except TelegramBadRequest:
+                pass
+
+        except Exception as e:
+            err = str(e)
+            await db.mark_action(token, "failed", err=err)
+            try:
+                await c.message.edit_text(t(lang, "failed", err=err), reply_markup=None)
+            except TelegramBadRequest:
+                pass
 
 
+# =========================
+# Inline mode (admin-only)
+# Query format: "50 @username"
+# =========================
 @dp.inline_query()
 async def inline_handler(q: InlineQuery):
-    a = await db_get_admin(q.from_user.id)
-    if not a:
-        return await q.answer([], is_personal=True, cache_time=1)
+    ok, role, lang = await require_admin(q.from_user.id)
+    if not ok:
+        # non-admin => empty
+        await q.answer([], cache_time=1, is_personal=True)
+        return
 
-    lang = a["lang"]
-    bot_me = await bot.get_me()
+    anon, comment, target_saved, lang = await db.get_settings(q.from_user.id)
 
-    max_stars, target, comment = parse_inline_query(q.query)
-
-    # target majburiy
-    if not max_stars or not target:
-        help_res = InlineQueryResultArticle(
+    text = (q.query or "").strip()
+    if not text:
+        # show hint
+        hint = InlineQueryResultArticle(
             id="help",
-            title=tr(lang, "inline_help_title"),
+            title=t(lang, "inline_usage"),
             input_message_content=InputTextMessageContent(
-                message_text=tr(lang, "inline_help_text", bot=bot_me.username)
-            ),
+                message_text=t(lang, "inline_usage")
+            )
         )
-        return await q.answer([help_res], is_personal=True, cache_time=1)
+        await q.answer([hint], cache_time=1, is_personal=True)
+        return
 
-    gifts = gifts_up_to(max_stars)[:INLINE_LIMIT]
-    results: List[InlineQueryResultArticle] = []
+    parts = text.split()
+    if len(parts) < 2:
+        hint = InlineQueryResultArticle(
+            id="help2",
+            title=t(lang, "inline_usage"),
+            input_message_content=InputTextMessageContent(
+                message_text=t(lang, "inline_usage")
+            )
+        )
+        await q.answer([hint], cache_time=1, is_personal=True)
+        return
 
-    for g in gifts:
-        action_id = await db_create_action(
-            creator_id=q.from_user.id,
-            chat_id=None,
-            target=target,
-            gift=g,
-            comment=comment,
-            hide_name=a["hide_name"],
+    # first: price, second: target
+    try:
+        price = int(parts[0])
+    except ValueError:
+        await q.answer([], cache_time=1, is_personal=True)
+        return
+
+    if price not in GIFTS_BY_PRICE:
+        await q.answer([], cache_time=1, is_personal=True)
+        return
+
+    trg = normalize_target(parts[1])
+    if not trg:
+        await q.answer([], cache_time=1, is_personal=True)
+        return
+
+    results = []
+    for g in GIFTS_BY_PRICE[price]:
+        token = secrets.token_urlsafe(8)
+
+        # Inline message ichida confirm/cancel bo‘ladi
+        msg_text = (
+            f"🎁 {g.label}  ⭐{g.stars}\n"
+            f"🎯 {trg}\n"
+            f"🔒 {(t(lang, 'mode_anon') if anon == 1 else t(lang, 'mode_profile'))}\n"
+            f"💬 {comment if comment else t(lang, 'comment_none')}\n\n"
+            f"{t(lang, 'confirm_title')}"
         )
 
-        cm = comment if comment else "(no comment)"
-        msg = (
-            f"🎁 {fmt_gift(g)}\n"
-            f"🎯 {target}\n"
-            f"🔒 {fmt_mode(lang, a['hide_name'])}\n"
-            f"💬 {cm}\n\n"
-            f"{tr(lang, 'confirm_title')}"
-        )
+        # NOTE: Inline result tanlanganda message chatga tushadi,
+        # callback bosilganda biz actionni DB’dan topishimiz uchun token kerak.
+        # Lekin inline tanlanmasidan oldin message_id yo‘q.
+        # Shuning uchun: inline message tushgach callback bosilganda biz token bo‘yicha action yo‘q bo‘lishi mumkin.
+        # Yechim: inline message “send/cancel” bosilganda, agar action yo‘q bo‘lsa, uni o‘sha paytda yaratamiz.
+        #
+        # Buning uchun callback_data ichiga kerakli minimal datani joylaymiz:
+        # token|gift_id|anon|target
+        pack = {
+            "tok": token,
+            "gid": g.gift_id,
+            "an": anon,
+            "t": trg,
+        }
+        payload = json.dumps(pack, separators=(",", ":"))
+        # callback_data 64 bayt limit: json ba’zida uzun bo‘lishi mumkin,
+        # shu sabab: uni qisqartirish uchun base64 emas, lekin juda kichik saqlaymiz.
+        # Agar username juda uzun bo‘lsa ham limitdan oshmasligi uchun:
+        # trg Telegram username max 32 => json hali ham odatda sig‘adi.
+        cb_send = f"i:send:{payload}"
+        cb_cancel = f"i:cancel:{payload}"
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text=t(lang, "confirm_send"), callback_data=cb_send[:64])
+        kb.button(text=t(lang, "confirm_cancel"), callback_data=cb_cancel[:64])
+        kb.adjust(1, 1)
 
         results.append(
             InlineQueryResultArticle(
-                id=str(action_id),
-                title=f"{g.label} ⭐{g.stars}",
-                description=f"target: {target}",
-                input_message_content=InputTextMessageContent(message_text=msg),
-                reply_markup=action_kb(lang, action_id),
+                id=f"g{g.gift_id}",
+                title=f"{g.label} (⭐{g.stars})",
+                description=t(lang, "inline_pick"),
+                input_message_content=InputTextMessageContent(message_text=msg_text),
+                reply_markup=kb.as_markup()
             )
         )
 
-    await q.answer(results, is_personal=True, cache_time=1)
+    await q.answer(results, cache_time=1, is_personal=True)
 
 
-# =========================
-# Action callbacks (send/cancel)
-# =========================
-@dp.callback_query(F.data.startswith("act:"))
-async def action_callback(c: CallbackQuery):
-    a = await require_admin(c.from_user.id)
-    if not a:
-        return await c.answer(tr(DEFAULT_LANG, "no_access"), show_alert=True)
+@dp.callback_query(F.data.startswith("i:"))
+async def inline_action_callback(c: CallbackQuery):
+    ok, role, lang = await require_admin(c.from_user.id)
+    if not ok:
+        await c.answer(t(lang, "access_denied"), show_alert=True)
+        return
 
-    lang = a["lang"]
-    await c.answer()
+    parts = c.data.split(":", 2)
+    if len(parts) != 3:
+        return
+    kind = parts[1]
+    raw = parts[2]
 
-    _, cmd, sid = c.data.split(":", 2)
-    action_id = int(sid)
+    # raw JSON bo‘lishi kerak (kesilib qolgan bo‘lsa ishlamaydi)
+    try:
+        pack = json.loads(raw)
+    except Exception:
+        await c.answer("Bad inline data.", show_alert=True)
+        return
 
-    act = await db_get_action(action_id)
-    if not act:
-        return await c.answer(tr(lang, "already_done"), show_alert=True)
+    token = pack.get("tok")
+    gid = int(pack.get("gid"))
+    trg = str(pack.get("t"))
+    an = int(pack.get("an") or 0)
 
-    # STRICT: only creator can send/cancel
-    if act["creator_id"] != c.from_user.id:
-        return await c.answer(tr(lang, "creator_only"), show_alert=True)
+    await db.ensure_settings(c.from_user.id)
+    anon, comment, target_saved, lang = await db.get_settings(c.from_user.id)
 
-    gift = GIFTS_BY_ID.get(act["gift_id"])
-    if not gift:
-        await db_mark_action(action_id, "failed", error="Gift not in catalog")
-        return await safe_edit(c, tr(lang, "err", e="Gift not found"), reply_markup=None)
+    # Inline’da ham faqat creator bosishi kerak:
+    # Inline message kim yuborgan bo‘lsa, callbackni ham o‘sha admin bosadi deb hisoblaymiz.
+    # (Boshqa admin bosgan bo‘lsa ham, bu yerda uni to‘xtatamiz.)
+    # Action DB’da yo‘q bo‘lsa, uni endi yaratamiz (message_id bor).
+    existing = await db.get_action(token)
 
-    if cmd == "cancel":
-        if act["status"] != "pending":
-            return await c.answer(tr(lang, "already_done"), show_alert=True)
+    if kind == "cancel":
+        if existing:
+            if int(existing["creator_id"]) != c.from_user.id:
+                return await c.answer(t(lang, "not_owner"), show_alert=True)
+            if existing["status"] in ("sent", "cancelled", "failed"):
+                return await c.answer(t(lang, "already_done"), show_alert=True)
+            await db.mark_action(token, "cancelled")
+        try:
+            await c.message.edit_text(t(lang, "cancelled"), reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        return
 
-        await db_mark_action(action_id, "cancelled", error=None)
-        txt = f"{tr(lang, 'cancelled')} ✅\n\n🎁 {fmt_gift(gift)}"
-        return await safe_edit(c, txt, reply_markup=None)
+    if kind == "send":
+        if not existing:
+            # yaratamiz
+            await db.create_action(
+                token=token,
+                creator_id=c.from_user.id,
+                chat_id=c.message.chat.id,
+                msg_id=c.message.message_id,
+                target=trg,
+                gift_id=gid,
+                anonymous=an,
+                comment=comment,
+            )
+            existing = await db.get_action(token)
 
-    if cmd == "send":
-        ok, st = await db_try_lock_sending(action_id)
-        if not ok:
-            if st == "sending":
-                return await c.answer(tr(lang, "still_sending"), show_alert=False)
-            return await c.answer(tr(lang, "already_done"), show_alert=True)
+        # owner check + claim
+        if int(existing["creator_id"]) != c.from_user.id:
+            return await c.answer(t(lang, "not_owner"), show_alert=True)
 
-        # show sending
-        target_str = act["target"]
-        cm = act["comment"] if act["comment"] else "(no comment)"
-        sending_text = (
-            f"{tr(lang, 'sending')}\n\n"
-            f"🎁 {fmt_gift(gift)}\n"
-            f"🎯 {target_str}\n"
-            f"🔒 {fmt_mode(lang, act['hide_name'])}\n"
-            f"💬 {cm}"
-        )
-        await safe_edit(c, sending_text, reply_markup=None)
-
-        # Resolve target
-        target_val: Union[str, int]
-        if target_str.lower() == "me":
-            # fallback
-            if c.from_user.username:
-                target_val = f"@{c.from_user.username}"
-            else:
-                target_val = c.from_user.id
-        elif target_str.startswith("@"):
-            target_val = target_str
-        elif target_str.isdigit():
-            target_val = int(target_str)
-        else:
-            target_val = target_str
+        ok_claim, why = await db.claim_action_sending(token, c.from_user.id)
+        if not ok_claim:
+            if why == "already":
+                return await c.answer(t(lang, "already_done"), show_alert=True)
+            return await c.answer("Error.", show_alert=True)
 
         try:
+            await c.message.edit_text(t(lang, "sending"), reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
+        try:
+            gift = GIFTS_BY_ID.get(gid)
+            if not gift:
+                raise RuntimeError("Gift not found")
+
+            # target resolve
+            target_str = trg
+            if target_str.startswith("@"):
+                target_t: Union[str, int] = target_str
+            elif target_str.isdigit():
+                target_t = int(target_str)
+            else:
+                target_t = target_str
+
             comment_attached = await relayer.send_star_gift(
-                target=target_val,
+                target=target_t,
                 gift=gift,
-                comment=act["comment"],
-                hide_name=(act["hide_name"] == 1),
+                comment=comment,
+                hide_name=(an == 1),
             )
-            await db_mark_action(action_id, "sent", error=None)
+            await db.mark_action(token, "sent")
 
-            final = (
-                f"{tr(lang, 'sent')}\n\n"
-                f"🎁 {fmt_gift(gift)}\n"
-                f"🎯 {target_str}\n"
-                f"🔒 {fmt_mode(lang, act['hide_name'])}\n"
-            )
-            if act["comment"]:
-                final += f"💬 {act['comment']}\n"
-                if not comment_attached:
-                    final += "⚠️ comment rejected by Telegram (sent without comment)\n"
-
-            await safe_edit(c, final, reply_markup=None)
+            done = t(lang, "sent")
+            if comment and not comment_attached:
+                done += "\n⚠️ Komment qabul qilinmadi (comment-siz yuborildi)."
+            try:
+                await c.message.edit_text(done, reply_markup=None)
+            except TelegramBadRequest:
+                pass
 
         except Exception as e:
-            await db_mark_action(action_id, "failed", error=str(e))
-            await safe_edit(c, tr(lang, "err", e=str(e)), reply_markup=None)
+            err = str(e)
+            await db.mark_action(token, "failed", err=err)
+            try:
+                await c.message.edit_text(t(lang, "failed", err=err), reply_markup=None)
+            except TelegramBadRequest:
+                pass
 
 
 # =========================
@@ -1159,18 +1201,22 @@ async def action_callback(c: CallbackQuery):
 # =========================
 async def main():
     log.info("BOOT: starting...")
-    await db_init()
-    log.info("BOOT: db_init OK")
-
-    me = await relayer.start()
-    log.info("Relayer OK | id=%s username=%s", getattr(me, "id", None), getattr(me, "username", None))
+    await db.start()
+    log.info("BOOT: db OK")
 
     try:
-        log.info("Polling...")
+        me = await relayer.start()
+        log.info("Relayer OK | id=%s username=%s", getattr(me, "id", None), getattr(me, "username", None))
+    except AuthKeyDuplicatedError:
+        log.error("RELAYER_SESSION DUPLICATED! Bu session 2ta IP’da ishlatilgan va endi o‘lgan. YANGI session oling va faqat 1 joyda ishlating.")
+        raise
+
+    log.info("BOOT: polling...")
+    try:
         await dp.start_polling(bot)
     finally:
         await relayer.stop()
-
+        await db.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
