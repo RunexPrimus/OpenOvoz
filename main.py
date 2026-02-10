@@ -1,23 +1,28 @@
 import os
-import json
 import time
+import json
+import uuid
 import asyncio
 import logging
+import hashlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 from contextlib import asynccontextmanager
 
 import aiosqlite
-import aiohttp
-from aiohttp import web
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramBadRequest
 
@@ -27,19 +32,16 @@ from telethon.errors import RPCError
 
 
 # =========================
-# Logging
+# ENV + Logging
 # =========================
+load_dotenv()
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=LOG_LEVEL,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 log = logging.getLogger("giftbot")
-
-
-# =========================
-# Env
-# =========================
-load_dotenv()
 
 
 def env_required(name: str) -> str:
@@ -52,341 +54,28 @@ def env_required(name: str) -> str:
 BOT_TOKEN = env_required("BOT_TOKEN")
 TG_API_ID = int(env_required("TG_API_ID"))
 TG_API_HASH = env_required("TG_API_HASH")
-RELAYER_SESSION = env_required("RELAYER_SESSION")
 
-CRYPTOPAY_TOKEN = env_required("CRYPTOPAY_TOKEN")
-CRYPTOPAY_BASE_URL = os.getenv("CRYPTOPAY_BASE_URL", "https://pay.crypt.bot").rstrip("/")
-
-# Pricing (your business logic)
-PRICE_PER_STAR = float(os.getenv("PRICE_PER_STAR", "0.015"))
-PRICE_MIN = float(os.getenv("PRICE_MIN", "0.10"))
-
-# CryptoBot Invoice config
-CURRENCY_TYPE = os.getenv("CRYPTOPAY_CURRENCY_TYPE", "crypto").lower().strip()  # "crypto" | "fiat"
-PAY_ASSET = os.getenv("CRYPTOPAY_ASSET", "USDT").upper().strip()
-PAY_FIAT = os.getenv("CRYPTOPAY_FIAT", "USD").upper().strip()
-ACCEPTED_ASSETS = os.getenv("CRYPTOPAY_ACCEPTED_ASSETS", "USDT,TON").upper().strip()
-
-INVOICE_EXPIRES_IN = int(os.getenv("INVOICE_EXPIRES_IN", "1800"))
-INVOICE_POLL_INTERVAL = float(os.getenv("INVOICE_POLL_INTERVAL", "10"))
-
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
+# Global fallback relayer (optional but recommended)
+DEFAULT_RELAYER_SESSION = os.getenv("RELAYER_SESSION", "").strip()
 
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
+# Owner (main admin)
+OWNER_ID = int(os.getenv("OWNER_ID", "7440949683"))
+
+# Web/hosting keep-alive (optional)
 PORT = int(os.getenv("PORT", "8080"))
 WEB_BIND = os.getenv("WEB_BIND", "0.0.0.0")
 
-BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip()  # optional for paid button
+# Inline context TTL
+INLINE_CTX_TTL_SEC = int(os.getenv("INLINE_CTX_TTL_SEC", "600"))
+
+# Default language for everyone (you asked RU)
+DEFAULT_LANG = os.getenv("DEFAULT_LANG", "ru").lower().strip()
 
 
 # =========================
-# i18n
-# ========================
-LANGS = ("uz", "ru", "en")
-
-T = {
-    "uz": {
-        "menu_recipient": "🎯 Qabul qiluvchi",
-        "menu_comment": "💬 Komment",
-        "menu_gift": "🎁 Sovg'a tanlash",
-        "menu_mode_anon": "🕵️ Anonim (hide name)",
-        "menu_mode_profile": "👤 Profil (show name)",
-        "menu_invoice": "💳 CryptoBot Invoice",
-        "menu_lang": "🌐 Til",
-        "back_menu": "⬅️ Menu",
-        "back_prices": "⬅️ Narxlar",
-
-        "status_title": "📌 Hozirgi sozlamalar:",
-        "status_target": "🎯 Qabul qiluvchi: {target}",
-        "status_comment": "💬 Komment: {comment}",
-        "status_gift": "🎁 Sovg‘a: {gift}",
-        "status_mode": "🔒 Rejim: {mode}",
-        "status_choose": "\nQuyidan tanlang:",
-
-        "mode_anon": "🕵️ Anonim (hide name)",
-        "mode_profile": "👤 Profil (show name)",
-        "comment_empty": "(yo‘q)",
-        "gift_none": "Tanlanmagan",
-
-        "prompt_target": (
-            "🎯 Qabul qiluvchini yuboring:\n"
-            "- `me` (siz)\n"
-            "- `@username`\n"
-            "- `user_id` (raqam)\n\n"
-            "✅ Eng ishonchlisi: @username\n"
-            "⚠️ user_id ba’zan ishlamasligi mumkin."
-        ),
-        "prompt_comment": (
-            "💬 Komment yuboring (ixtiyoriy).\n"
-            "O‘chirish uchun: `-` yuboring.\n"
-            "Masalan: `Congrats 🎁` yoki `:)`"
-        ),
-        "pick_price": "🎁 Sovg‘a narxini tanlang:",
-        "pick_by_price": "⭐ {price} bo‘yicha sovg‘a tanlang:",
-        "gift_selected": "✅ Sovg‘a tanlandi:\n{label} (⭐{stars})\nID: {gid}\n\nEndi: 💳 Invoice yarating.",
-
-        "saved_target": "✅ Qabul qiluvchi saqlandi.\n\n{status}",
-        "saved_comment": "✅ Komment saqlandi.\n\n{status}",
-        "deleted_comment": "✅ Komment o‘chirildi.\n\n{status}",
-
-        "need_gift_first": "❌ Avval sovg‘ani tanlang.\n\n{status}",
-
-        "invoice_creating": (
-            "⏳ Invoice yaratilmoqda...\n"
-            "🧾 Buyurtma: #{order}\n"
-            "🎁 Gift: {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "🔒 Rejim: {mode}\n"
-            "💬 Comment: {comment}\n"
-            "💵 To‘lov: {amount} {cur}"
-        ),
-        "invoice_ready": (
-            "✅ Invoice tayyor!\n\n"
-            "🧾 Buyurtma: #{order}\n"
-            "🎁 Gift: {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "💵 To‘lov: {amount} {cur}\n\n"
-            "To‘lang, bot o‘zi tekshiradi va sovg‘ani yuboradi."
-        ),
-        "invoice_open": "💳 Invoice ochish",
-        "invoice_check": "🔄 Tekshirish",
-
-        "check_not_found": "❌ Invoice topilmadi (API).",
-        "check_forbidden": "❌ Buyurtma topilmadi yoki ruxsat yo‘q.",
-        "check_no_invoice": "❌ Invoice yo‘q.",
-        "check_expired": "⌛ Invoice muddati tugagan (expired).",
-        "check_status": "🧾 Buyurtma: #{order}\n📌 Invoice status: {status}\n\nTo‘lagan bo‘lsangiz, 5-10 soniyada yangilanadi.",
-
-        "paid_sending": "✅ Invoice PAID ✅\n🎁 Sovg‘a avtomatik yuborilmoqda...",
-        "already_sent": "✅ Bu buyurtma allaqachon yakunlangan.\n🎁 Sovg‘a yuborilgan.",
-        "already_sending": "⏳ Sovg‘a yuborilmoqda, biroz kuting.",
-
-        "delivery_sent_dm": (
-            "✅ Sovg‘a yuborildi!\n"
-            "🧾 Buyurtma: #{order}\n"
-            "🎁 {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "🔒 Rejim: {mode}\n"
-            "{comment_line}"
-            "{comment_warn}"
-        ),
-        "comment_line": "💬 Comment: {comment}\n",
-        "comment_warn": "⚠️ Komment qabul qilinmadi (fallback comment-siz yuborildi).\n",
-
-        "delivery_failed_dm": "❌ Sovg‘ani yuborib bo‘lmadi.\n🧾 Buyurtma: #{order}\nXatolik: {err}",
-        "toggle_anon_on": "✅ Anonim yoqildi (hide name)",
-        "toggle_anon_off": "✅ Profil ko‘rinadi (show name)",
-
-        "lang_pick": "🌐 Tilni tanlang:",
-        "lang_set": "✅ Til saqlandi.",
-    },
-
-    "ru": {
-        "menu_recipient": "🎯 Получатель",
-        "menu_comment": "💬 Комментарий",
-        "menu_gift": "🎁 Выбор подарка",
-        "menu_mode_anon": "🕵️ Анонимно (hide name)",
-        "menu_mode_profile": "👤 Профиль (show name)",
-        "menu_invoice": "💳 CryptoBot Invoice",
-        "menu_lang": "🌐 Язык",
-        "back_menu": "⬅️ Меню",
-        "back_prices": "⬅️ Цены",
-
-        "status_title": "📌 Текущие настройки:",
-        "status_target": "🎯 Получатель: {target}",
-        "status_comment": "💬 Комментарий: {comment}",
-        "status_gift": "🎁 Подарок: {gift}",
-        "status_mode": "🔒 Режим: {mode}",
-        "status_choose": "\nВыберите действие:",
-
-        "mode_anon": "🕵️ Анонимно (hide name)",
-        "mode_profile": "👤 Профиль (show name)",
-        "comment_empty": "(нет)",
-        "gift_none": "Не выбран",
-
-        "prompt_target": (
-            "🎯 Отправьте получателя:\n"
-            "- `me` (вы)\n"
-            "- `@username`\n"
-            "- `user_id` (цифры)\n\n"
-            "✅ Самый надежный: @username\n"
-            "⚠️ user_id иногда не работает."
-        ),
-        "prompt_comment": (
-            "💬 Отправьте комментарий (необязательно).\n"
-            "Чтобы удалить: отправьте `-`.\n"
-            "Напр.: `Congrats 🎁` или `:)`"
-        ),
-        "pick_price": "🎁 Выберите цену подарка:",
-        "pick_by_price": "⭐ Подарки за {price}:",
-        "gift_selected": "✅ Подарок выбран:\n{label} (⭐{stars})\nID: {gid}\n\nДалее: 💳 Создайте invoice.",
-
-        "saved_target": "✅ Получатель сохранен.\n\n{status}",
-        "saved_comment": "✅ Комментарий сохранен.\n\n{status}",
-        "deleted_comment": "✅ Комментарий удален.\n\n{status}",
-
-        "need_gift_first": "❌ Сначала выберите подарок.\n\n{status}",
-
-        "invoice_creating": (
-            "⏳ Создаю invoice...\n"
-            "🧾 Заказ: #{order}\n"
-            "🎁 Gift: {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "🔒 Режим: {mode}\n"
-            "💬 Comment: {comment}\n"
-            "💵 Оплата: {amount} {cur}"
-        ),
-        "invoice_ready": (
-            "✅ Invoice готов!\n\n"
-            "🧾 Заказ: #{order}\n"
-            "🎁 Gift: {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "💵 Оплата: {amount} {cur}\n\n"
-            "Оплатите — бот сам проверит и отправит подарок."
-        ),
-        "invoice_open": "💳 Открыть invoice",
-        "invoice_check": "🔄 Проверить",
-
-        "check_not_found": "❌ Invoice не найден (API).",
-        "check_forbidden": "❌ Заказ не найден или нет доступа.",
-        "check_no_invoice": "❌ Нет invoice.",
-        "check_expired": "⌛ Invoice просрочен (expired).",
-        "check_status": "🧾 Заказ: #{order}\n📌 Статус invoice: {status}\n\nЕсли оплатили — обновится через 5-10 секунд.",
-
-        "paid_sending": "✅ Invoice PAID ✅\n🎁 Подарок отправляется автоматически...",
-        "already_sent": "✅ Этот заказ уже выполнен.\n🎁 Подарок отправлен.",
-        "already_sending": "⏳ Подарок отправляется, подождите.",
-
-        "delivery_sent_dm": (
-            "✅ Подарок отправлен!\n"
-            "🧾 Заказ: #{order}\n"
-            "🎁 {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "🔒 Режим: {mode}\n"
-            "{comment_line}"
-            "{comment_warn}"
-        ),
-        "comment_line": "💬 Comment: {comment}\n",
-        "comment_warn": "⚠️ Комментарий не применился (fallback без комментария).\n",
-
-        "delivery_failed_dm": "❌ Не удалось отправить подарок.\n🧾 Заказ: #{order}\nОшибка: {err}",
-        "toggle_anon_on": "✅ Анонимный режим включен (hide name)",
-        "toggle_anon_off": "✅ Профиль виден (show name)",
-
-        "lang_pick": "🌐 Выберите язык:",
-        "lang_set": "✅ Язык сохранен.",
-    },
-
-    "en": {
-        "menu_recipient": "🎯 Recipient",
-        "menu_comment": "💬 Comment",
-        "menu_gift": "🎁 Choose gift",
-        "menu_mode_anon": "🕵️ Anonymous (hide name)",
-        "menu_mode_profile": "👤 Profile (show name)",
-        "menu_invoice": "💳 CryptoBot Invoice",
-        "menu_lang": "🌐 Language",
-        "back_menu": "⬅️ Menu",
-        "back_prices": "⬅️ Prices",
-
-        "status_title": "📌 Current settings:",
-        "status_target": "🎯 Recipient: {target}",
-        "status_comment": "💬 Comment: {comment}",
-        "status_gift": "🎁 Gift: {gift}",
-        "status_mode": "🔒 Mode: {mode}",
-        "status_choose": "\nChoose:",
-
-        "mode_anon": "🕵️ Anonymous (hide name)",
-        "mode_profile": "👤 Profile (show name)",
-        "comment_empty": "(none)",
-        "gift_none": "Not selected",
-
-        "prompt_target": (
-            "🎯 Send recipient:\n"
-            "- `me` (you)\n"
-            "- `@username`\n"
-            "- `user_id` (digits)\n\n"
-            "✅ Best: @username\n"
-            "⚠️ user_id may not work sometimes."
-        ),
-        "prompt_comment": (
-            "💬 Send a comment (optional).\n"
-            "To delete: send `-`.\n"
-            "E.g.: `Congrats 🎁` or `:)`"
-        ),
-        "pick_price": "🎁 Choose price:",
-        "pick_by_price": "⭐ Gifts for {price}:",
-        "gift_selected": "✅ Gift selected:\n{label} (⭐{stars})\nID: {gid}\n\nNext: create invoice.",
-
-        "saved_target": "✅ Recipient saved.\n\n{status}",
-        "saved_comment": "✅ Comment saved.\n\n{status}",
-        "deleted_comment": "✅ Comment removed.\n\n{status}",
-
-        "need_gift_first": "❌ Choose a gift first.\n\n{status}",
-
-        "invoice_creating": (
-            "⏳ Creating invoice...\n"
-            "🧾 Order: #{order}\n"
-            "🎁 Gift: {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "🔒 Mode: {mode}\n"
-            "💬 Comment: {comment}\n"
-            "💵 Pay: {amount} {cur}"
-        ),
-        "invoice_ready": (
-            "✅ Invoice ready!\n\n"
-            "🧾 Order: #{order}\n"
-            "🎁 Gift: {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "💵 Pay: {amount} {cur}\n\n"
-            "Pay it — bot will auto-check and send the gift."
-        ),
-        "invoice_open": "💳 Open invoice",
-        "invoice_check": "🔄 Check",
-
-        "check_not_found": "❌ Invoice not found (API).",
-        "check_forbidden": "❌ Order not found or no access.",
-        "check_no_invoice": "❌ No invoice.",
-        "check_expired": "⌛ Invoice expired.",
-        "check_status": "🧾 Order: #{order}\n📌 Invoice status: {status}\n\nIf paid, it updates in 5–10 seconds.",
-
-        "paid_sending": "✅ Invoice PAID ✅\n🎁 Gift is being sent automatically...",
-        "already_sent": "✅ This order is completed.\n🎁 Gift already sent.",
-        "already_sending": "⏳ Gift is being sent, please wait.",
-
-        "delivery_sent_dm": (
-            "✅ Gift sent!\n"
-            "🧾 Order: #{order}\n"
-            "🎁 {gift} (⭐{stars})\n"
-            "🎯 Target: {target}\n"
-            "🔒 Mode: {mode}\n"
-            "{comment_line}"
-            "{comment_warn}"
-        ),
-        "comment_line": "💬 Comment: {comment}\n",
-        "comment_warn": "⚠️ Comment was rejected (fallback sent without comment).\n",
-
-        "delivery_failed_dm": "❌ Failed to send gift.\n🧾 Order: #{order}\nError: {err}",
-        "toggle_anon_on": "✅ Anonymous enabled (hide name)",
-        "toggle_anon_off": "✅ Profile visible (show name)",
-
-        "lang_pick": "🌐 Choose language:",
-        "lang_set": "✅ Language saved.",
-    },
-}
-
-
-def t(lang: str, key: str, **kw) -> str:
-    lang = lang if lang in T else "ru"
-    s = T[lang].get(key) or T["ru"].get(key) or key
-    try:
-        return s.format(**kw)
-    except Exception:
-        return s
-
-
-# =========================
-# Gifts
+# Gifts catalog (STATIC)
 # =========================
 @dataclass(frozen=True)
 class GiftItem:
@@ -411,17 +100,151 @@ GIFT_CATALOG: List[GiftItem] = [
     GiftItem(5956217000635139069, 50, "🧸(hat) 50★"),
 ]
 
-GIFTS_BY_PRICE: Dict[int, List[GiftItem]] = {}
-GIFTS_BY_ID: Dict[int, GiftItem] = {}
-for g in GIFT_CATALOG:
-    GIFTS_BY_PRICE.setdefault(g.stars, []).append(g)
-    GIFTS_BY_ID[g.id] = g
-
-ALLOWED_PRICES = sorted(GIFTS_BY_PRICE.keys())
+GIFTS_BY_ID: Dict[int, GiftItem] = {g.id: g for g in GIFT_CATALOG}
 
 
 # =========================
-# DB (aiosqlite safe + migrations)
+# i18n (UZ/RU/EN)
+# =========================
+T = {
+    "ru": {
+        "access_denied": "⛔ Доступ запрещён.\nЭтот бот только для админов.",
+        "start_admin": "✅ Доступ разрешён.\n\nИспользование inline:\n`@{bot} 50 @username | комментарий | anon/show`\n\nПример:\n`@{bot} 50 @vremenniy_uzer | :) | anon`",
+        "help": (
+            "🛠 Команды:\n"
+            "/admin_add <id|@user> — добавить админа (owner)\n"
+            "/admin_remove <id|@user> — отключить админа (owner)\n"
+            "/admin_list — список админов\n"
+            "/session_set <SESSION_STRING> — сохранить вашу сессию (relayer)\n"
+            "/session_clear — убрать вашу сессию\n"
+            "/lang <ru|uz|en> — язык\n"
+            "/set_target <me|@user|id> — дефолтный получатель\n"
+            "/set_comment <text|off> — дефолтный комментарий\n"
+            "/mode <anon|show> — дефолтный режим\n"
+        ),
+        "need_session": "❌ У вас нет relayer-сессии. Используйте /session_set <SESSION_STRING> (QR-сессия).",
+        "owner_only": "❌ Только owner может это делать.",
+        "admin_added": "✅ Админ добавлен: {uid}",
+        "admin_removed": "✅ Админ отключён: {uid}",
+        "admin_list": "👮 Админы:\n{rows}",
+        "session_saved": "✅ Сессия сохранена.",
+        "session_cleared": "✅ Сессия удалена.",
+        "lang_set": "✅ Язык: {lang}",
+        "target_set": "✅ Получатель по умолчанию: {target}",
+        "comment_set": "✅ Комментарий по умолчанию сохранён.",
+        "comment_cleared": "✅ Комментарий удалён.",
+        "mode_set": "✅ Режим по умолчанию: {mode}",
+        "inline_bad": "Напишите так: `@{bot} 50 @username | comment | anon/show`",
+        "inline_need_target": "⚠️ Нет получателя. Укажите `@username` или задайте /set_target",
+        "inline_title": "{label} (⭐{stars})",
+        "inline_desc": "Кому: {target} | Режим: {mode}",
+        "msg_preview": "🎁 Подарок: {label} (⭐{stars})\n👤 Кому: {target}\n🔒 Режим: {mode}\n💬 Коммент: {comment}",
+        "btn_send": "✅ Отправить",
+        "btn_cancel": "❌ Отмена",
+        "btn_toggle": "🕵️/👤 Режим",
+        "sending": "⏳ Отправляю...",
+        "sent": "✅ Отправлено!",
+        "cancelled": "❌ Отменено.",
+        "already_done": "⚠️ Уже обработано (повторно нельзя).",
+        "fail": "❌ Ошибка: {e}",
+        "note_anon": "ℹ️ Важно: hide_name может скрывать имя в деталях подарка, но Telegram всё равно может показывать отправителя в чате.",
+    },
+    "uz": {
+        "access_denied": "⛔ Ruxsat yo‘q.\nBu bot faqat adminlar uchun.",
+        "start_admin": "✅ Ruxsat bor.\n\nInline ishlatish:\n`@{bot} 50 @username | komment | anon/show`\n\nMisol:\n`@{bot} 50 @vremenniy_uzer | :) | anon`",
+        "help": (
+            "🛠 Buyruqlar:\n"
+            "/admin_add <id|@user> — admin qo‘shish (owner)\n"
+            "/admin_remove <id|@user> — adminni o‘chirish (owner)\n"
+            "/admin_list — adminlar ro‘yxati\n"
+            "/session_set <SESSION_STRING> — relayer sessiya saqlash\n"
+            "/session_clear — sessiyani o‘chirish\n"
+            "/lang <ru|uz|en> — til\n"
+            "/set_target <me|@user|id> — default qabul qiluvchi\n"
+            "/set_comment <text|off> — default komment\n"
+            "/mode <anon|show> — default rejim\n"
+        ),
+        "need_session": "❌ Sizda relayer sessiya yo‘q. /session_set <SESSION_STRING> qiling (QR sessiya).",
+        "owner_only": "❌ Faqat owner qila oladi.",
+        "admin_added": "✅ Admin qo‘shildi: {uid}",
+        "admin_removed": "✅ Admin o‘chirildi: {uid}",
+        "admin_list": "👮 Adminlar:\n{rows}",
+        "session_saved": "✅ Sessiya saqlandi.",
+        "session_cleared": "✅ Sessiya o‘chirildi.",
+        "lang_set": "✅ Til: {lang}",
+        "target_set": "✅ Default target: {target}",
+        "comment_set": "✅ Default komment saqlandi.",
+        "comment_cleared": "✅ Komment o‘chirildi.",
+        "mode_set": "✅ Default rejim: {mode}",
+        "inline_bad": "Shunday yozing: `@{bot} 50 @username | comment | anon/show`",
+        "inline_need_target": "⚠️ Target yo‘q. `@username` yozing yoki /set_target qo‘ying",
+        "inline_title": "{label} (⭐{stars})",
+        "inline_desc": "Kimga: {target} | Rejim: {mode}",
+        "msg_preview": "🎁 Sovg‘a: {label} (⭐{stars})\n👤 Kimga: {target}\n🔒 Rejim: {mode}\n💬 Komment: {comment}",
+        "btn_send": "✅ Yuborish",
+        "btn_cancel": "❌ Bekor",
+        "btn_toggle": "🕵️/👤 Rejim",
+        "sending": "⏳ Yuborilyapti...",
+        "sent": "✅ Yuborildi!",
+        "cancelled": "❌ Bekor qilindi.",
+        "already_done": "⚠️ Oldin ishlangan (qayta bo‘lmaydi).",
+        "fail": "❌ Xatolik: {e}",
+        "note_anon": "ℹ️ Eslatma: hide_name gift detail’da ismni yashirishi mumkin, lekin chatda Telegram baribir yuboruvchini ko‘rsatishi mumkin.",
+    },
+    "en": {
+        "access_denied": "⛔ Access denied. Admin-only bot.",
+        "start_admin": "✅ Access granted.\n\nInline usage:\n`@{bot} 50 @username | comment | anon/show`\n\nExample:\n`@{bot} 50 @vremenniy_uzer | :) | anon`",
+        "help": (
+            "🛠 Commands:\n"
+            "/admin_add <id|@user> — add admin (owner)\n"
+            "/admin_remove <id|@user> — disable admin (owner)\n"
+            "/admin_list — list admins\n"
+            "/session_set <SESSION_STRING> — save your relayer session\n"
+            "/session_clear — remove your session\n"
+            "/lang <ru|uz|en> — language\n"
+            "/set_target <me|@user|id> — default receiver\n"
+            "/set_comment <text|off> — default comment\n"
+            "/mode <anon|show> — default mode\n"
+        ),
+        "need_session": "❌ You have no relayer session. Use /session_set <SESSION_STRING> (QR session).",
+        "owner_only": "❌ Owner-only.",
+        "admin_added": "✅ Admin added: {uid}",
+        "admin_removed": "✅ Admin disabled: {uid}",
+        "admin_list": "👮 Admins:\n{rows}",
+        "session_saved": "✅ Session saved.",
+        "session_cleared": "✅ Session cleared.",
+        "lang_set": "✅ Language: {lang}",
+        "target_set": "✅ Default target: {target}",
+        "comment_set": "✅ Default comment saved.",
+        "comment_cleared": "✅ Comment cleared.",
+        "mode_set": "✅ Default mode: {mode}",
+        "inline_bad": "Use: `@{bot} 50 @username | comment | anon/show`",
+        "inline_need_target": "⚠️ Missing target. Provide `@username` or set /set_target",
+        "inline_title": "{label} (⭐{stars})",
+        "inline_desc": "To: {target} | Mode: {mode}",
+        "msg_preview": "🎁 Gift: {label} (⭐{stars})\n👤 To: {target}\n🔒 Mode: {mode}\n💬 Comment: {comment}",
+        "btn_send": "✅ Send",
+        "btn_cancel": "❌ Cancel",
+        "btn_toggle": "🕵️/👤 Mode",
+        "sending": "⏳ Sending...",
+        "sent": "✅ Sent!",
+        "cancelled": "❌ Cancelled.",
+        "already_done": "⚠️ Already processed (no duplicate).",
+        "fail": "❌ Error: {e}",
+        "note_anon": "ℹ️ Note: hide_name may hide your name in gift details, but Telegram can still show the sender in chat.",
+    },
+}
+
+
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = (lang or DEFAULT_LANG).lower()
+    pack = T.get(lang, T["ru"])
+    s = pack.get(key, T["ru"].get(key, key))
+    return s.format(**kwargs)
+
+
+# =========================
+# DB
 # =========================
 @asynccontextmanager
 async def db_connect():
@@ -433,448 +256,383 @@ async def db_connect():
         yield db
 
 
-async def _table_info(db: aiosqlite.Connection, table: str) -> List[str]:
-    cur = await db.execute(f"PRAGMA table_info({table})")
-    rows = await cur.fetchall()
-    return [r[1] for r in rows]  # name column
-
-
-async def _add_column_if_missing(db: aiosqlite.Connection, table: str, col_name: str, col_def_sql: str):
-    cols = await _table_info(db, table)
-    if col_name in cols:
-        return
-    await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def_sql}")
-
-
 async def db_init():
     async with db_connect() as db:
-        # create tables if not exist
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS user_settings (
+        CREATE TABLE IF NOT EXISTS admins (
             user_id INTEGER PRIMARY KEY,
-            target TEXT DEFAULT NULL,
-            comment TEXT DEFAULT NULL,
-            selected_gift_id INTEGER DEFAULT NULL,
-            anonymous INTEGER DEFAULT 0,
-            lang TEXT DEFAULT 'ru'
+            role TEXT NOT NULL DEFAULT 'admin', -- owner|admin
+            is_active INTEGER NOT NULL DEFAULT 1,
+            added_by INTEGER,
+            added_at INTEGER NOT NULL
         );
         """)
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS admin_prefs (
+            user_id INTEGER PRIMARY KEY,
+            lang TEXT DEFAULT NULL,
+            default_target TEXT DEFAULT NULL,
+            default_comment TEXT DEFAULT NULL,
+            default_anonymous INTEGER NOT NULL DEFAULT 0
+        );
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+            user_id INTEGER PRIMARY KEY,
+            session_string TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at INTEGER NOT NULL
+        );
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS inline_ctx (
+            token TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
             target TEXT NOT NULL,
-            gift_id INTEGER NOT NULL,
-            stars INTEGER NOT NULL,
             comment TEXT DEFAULT NULL,
             anonymous INTEGER NOT NULL DEFAULT 0,
-
-            price_amount TEXT NOT NULL,
-            price_currency TEXT NOT NULL,
-
-            invoice_id INTEGER,
-            invoice_url TEXT,
-
-            origin_chat_id INTEGER,
-            origin_message_id INTEGER,
-
-            status TEXT NOT NULL DEFAULT 'creating', -- creating|active|paid|sending|sent|failed|expired
-            error TEXT DEFAULT NULL,
-
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            paid_at INTEGER,
-            sent_at INTEGER
+            created_at INTEGER NOT NULL
         );
         """)
-        # migrations for older DB
-        await _add_column_if_missing(db, "user_settings", "lang", "lang TEXT DEFAULT 'ru'")
-        await _add_column_if_missing(db, "orders", "origin_chat_id", "origin_chat_id INTEGER")
-        await _add_column_if_missing(db, "orders", "origin_message_id", "origin_message_id INTEGER")
-        await _add_column_if_missing(db, "orders", "paid_at", "paid_at INTEGER")
-        await _add_column_if_missing(db, "orders", "sent_at", "sent_at INTEGER")
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS sent_guard (
+            message_key TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL
+        );
+        """)
+        await db.commit()
 
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_invoice ON orders(invoice_id);")
+    # ensure owner exists
+    await db_ensure_owner()
+
+
+async def db_ensure_owner():
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+            INSERT OR IGNORE INTO admins(user_id, role, is_active, added_by, added_at)
+            VALUES(?, 'owner', 1, NULL, ?)
+        """, (OWNER_ID, now))
+        await db.execute("""
+            INSERT OR IGNORE INTO admin_prefs(user_id, lang, default_target, default_comment, default_anonymous)
+            VALUES(?, ?, NULL, NULL, 0)
+        """, (OWNER_ID, DEFAULT_LANG))
         await db.commit()
 
 
-async def db_ensure_user(user_id: int, default_target: Optional[str] = None):
+async def db_is_admin(user_id: int) -> Tuple[bool, str]:
     async with db_connect() as db:
-        await db.execute("INSERT OR IGNORE INTO user_settings(user_id) VALUES(?)", (user_id,))
-        if default_target:
-            await db.execute(
-                "UPDATE user_settings SET target=COALESCE(target, ?) WHERE user_id=?",
-                (default_target, user_id),
-            )
-        await db.commit()
-
-
-async def db_get_settings(user_id: int) -> Tuple[str, Optional[str], Optional[int], int, str]:
-    async with db_connect() as db:
-        cur = await db.execute(
-            "SELECT target, comment, selected_gift_id, anonymous, lang FROM user_settings WHERE user_id=?",
-            (user_id,),
-        )
+        cur = await db.execute("SELECT role, is_active FROM admins WHERE user_id=?", (user_id,))
         row = await cur.fetchone()
         if not row:
-            return ("me", None, None, 0, "ru")
-        lang = (row[4] or "ru").lower()
-        if lang not in LANGS:
-            lang = "ru"
-        return (row[0] or "me", row[1], row[2], int(row[3] or 0), lang)
+            return False, "none"
+        role, is_active = row[0], int(row[1])
+        return (is_active == 1), (role or "admin")
+
+
+async def db_add_admin(by_user: int, user_id: int):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO admins(user_id, role, is_active, added_by, added_at)
+            VALUES(?, 'admin', 1, ?, ?)
+        """, (user_id, by_user, now))
+        await db.execute("""
+            INSERT OR IGNORE INTO admin_prefs(user_id, lang, default_target, default_comment, default_anonymous)
+            VALUES(?, ?, NULL, NULL, 0)
+        """, (user_id, DEFAULT_LANG))
+        await db.commit()
+
+
+async def db_remove_admin(user_id: int):
+    async with db_connect() as db:
+        await db.execute("UPDATE admins SET is_active=0 WHERE user_id=? AND role!='owner'", (user_id,))
+        await db.commit()
+
+
+async def db_list_admins() -> List[Tuple[int, str, int]]:
+    async with db_connect() as db:
+        cur = await db.execute("SELECT user_id, role, is_active FROM admins ORDER BY role DESC, user_id ASC")
+        rows = await cur.fetchall()
+        return [(int(r[0]), r[1], int(r[2])) for r in rows]
+
+
+async def db_get_prefs(user_id: int) -> Tuple[str, Optional[str], Optional[str], int]:
+    async with db_connect() as db:
+        cur = await db.execute("""
+            SELECT lang, default_target, default_comment, default_anonymous
+            FROM admin_prefs
+            WHERE user_id=?
+        """, (user_id,))
+        row = await cur.fetchone()
+        if not row:
+            return DEFAULT_LANG, None, None, 0
+        return (row[0] or DEFAULT_LANG, row[1], row[2], int(row[3] or 0))
 
 
 async def db_set_lang(user_id: int, lang: str):
-    lang = (lang or "ru").lower()
-    if lang not in LANGS:
-        lang = "ru"
     async with db_connect() as db:
-        await db.execute("UPDATE user_settings SET lang=? WHERE user_id=?", (lang, user_id))
+        await db.execute("UPDATE admin_prefs SET lang=? WHERE user_id=?", (lang, user_id))
         await db.commit()
 
 
-async def db_set_target(user_id: int, target: str):
+async def db_set_target(user_id: int, target: Optional[str]):
     async with db_connect() as db:
-        await db.execute("UPDATE user_settings SET target=? WHERE user_id=?", (target, user_id))
+        await db.execute("UPDATE admin_prefs SET default_target=? WHERE user_id=?", (target, user_id))
         await db.commit()
 
 
 async def db_set_comment(user_id: int, comment: Optional[str]):
     async with db_connect() as db:
-        await db.execute("UPDATE user_settings SET comment=? WHERE user_id=?", (comment, user_id))
+        await db.execute("UPDATE admin_prefs SET default_comment=? WHERE user_id=?", (comment, user_id))
         await db.commit()
 
 
-async def db_set_selected_gift(user_id: int, gift_id: Optional[int]):
+async def db_set_mode(user_id: int, anonymous: int):
     async with db_connect() as db:
-        await db.execute("UPDATE user_settings SET selected_gift_id=? WHERE user_id=?", (gift_id, user_id))
+        await db.execute("UPDATE admin_prefs SET default_anonymous=? WHERE user_id=?", (anonymous, user_id))
         await db.commit()
 
 
-async def db_toggle_anonymous(user_id: int) -> int:
+async def db_set_session(user_id: int, session_string: str):
+    now = int(time.time())
     async with db_connect() as db:
-        cur = await db.execute("SELECT anonymous FROM user_settings WHERE user_id=?", (user_id,))
+        await db.execute("""
+            INSERT OR REPLACE INTO admin_sessions(user_id, session_string, enabled, updated_at)
+            VALUES(?, ?, 1, ?)
+        """, (user_id, session_string.strip(), now))
+        await db.commit()
+
+
+async def db_clear_session(user_id: int):
+    async with db_connect() as db:
+        await db.execute("DELETE FROM admin_sessions WHERE user_id=?", (user_id,))
+        await db.commit()
+
+
+async def db_get_session(user_id: int) -> Optional[str]:
+    async with db_connect() as db:
+        cur = await db.execute("SELECT session_string, enabled FROM admin_sessions WHERE user_id=?", (user_id,))
         row = await cur.fetchone()
-        current = int(row[0] or 0) if row else 0
-        new_val = 0 if current == 1 else 1
-        await db.execute("UPDATE user_settings SET anonymous=? WHERE user_id=?", (new_val, user_id))
-        await db.commit()
-        return new_val
+        if not row:
+            return None
+        if int(row[1]) != 1:
+            return None
+        return row[0]
 
 
-async def db_create_order(
-    user_id: int,
-    target: str,
-    gift: GiftItem,
-    comment: Optional[str],
-    anonymous: int,
-    price_amount: str,
-    price_currency: str,
-) -> int:
-    now = int(time.time())
-    async with db_connect() as db:
-        cur = await db.execute("""
-            INSERT INTO orders(
-                user_id, target, gift_id, stars, comment, anonymous,
-                price_amount, price_currency,
-                status, created_at, updated_at
-            )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            user_id, target, gift.id, gift.stars, comment, anonymous,
-            price_amount, price_currency,
-            "creating", now, now
-        ))
-        await db.commit()
-        return int(cur.lastrowid)
-
-
-async def db_attach_invoice(order_id: int, invoice_id: int, invoice_url: str):
+async def db_put_inline_ctx(token: str, user_id: int, target: str, comment: Optional[str], anonymous: int):
     now = int(time.time())
     async with db_connect() as db:
         await db.execute("""
-            UPDATE orders
-            SET invoice_id=?, invoice_url=?, status='active', updated_at=?, error=NULL
-            WHERE order_id=?
-        """, (invoice_id, invoice_url, now, order_id))
+            INSERT OR REPLACE INTO inline_ctx(token, user_id, target, comment, anonymous, created_at)
+            VALUES(?,?,?,?,?,?)
+        """, (token, user_id, target, comment, int(anonymous), now))
         await db.commit()
 
 
-async def db_set_order_origin_message(order_id: int, chat_id: int, message_id: int):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            UPDATE orders
-            SET origin_chat_id=?, origin_message_id=?, updated_at=?
-            WHERE order_id=?
-        """, (chat_id, message_id, now, order_id))
-        await db.commit()
-
-
-async def db_get_order(order_id: int) -> Optional[dict]:
+async def db_get_inline_ctx(token: str) -> Optional[dict]:
     async with db_connect() as db:
         cur = await db.execute("""
-            SELECT order_id, user_id, target, gift_id, stars, comment, anonymous,
-                   price_amount, price_currency, invoice_id, invoice_url,
-                   origin_chat_id, origin_message_id,
-                   status, error, created_at, updated_at, paid_at, sent_at
-            FROM orders
-            WHERE order_id=?
-        """, (order_id,))
-        r = await cur.fetchone()
-        if not r:
+            SELECT token, user_id, target, comment, anonymous, created_at
+            FROM inline_ctx WHERE token=?
+        """, (token,))
+        row = await cur.fetchone()
+        if not row:
             return None
         return {
-            "order_id": r[0],
-            "user_id": r[1],
-            "target": r[2],
-            "gift_id": r[3],
-            "stars": r[4],
-            "comment": r[5],
-            "anonymous": r[6],
-            "price_amount": r[7],
-            "price_currency": r[8],
-            "invoice_id": r[9],
-            "invoice_url": r[10],
-            "origin_chat_id": r[11],
-            "origin_message_id": r[12],
-            "status": r[13],
-            "error": r[14],
-            "created_at": r[15],
-            "updated_at": r[16],
-            "paid_at": r[17],
-            "sent_at": r[18],
+            "token": row[0],
+            "user_id": int(row[1]),
+            "target": row[2],
+            "comment": row[3],
+            "anonymous": int(row[4]),
+            "created_at": int(row[5]),
         }
 
 
-async def db_list_active_invoice_orders(limit: int = 200) -> List[dict]:
-    """
-    Only orders that still need invoice polling.
-    IMPORTANT: do NOT include 'sent' orders here.
-    """
+async def db_update_inline_mode(token: str, anonymous: int):
     async with db_connect() as db:
-        cur = await db.execute("""
-            SELECT order_id, user_id, invoice_id
-            FROM orders
-            WHERE status IN ('active','creating') AND invoice_id IS NOT NULL
-            ORDER BY created_at ASC
-            LIMIT ?
-        """, (limit,))
-        rows = await cur.fetchall()
-        return [{"order_id": r[0], "user_id": r[1], "invoice_id": r[2]} for r in rows]
-
-
-async def db_mark_paid_if_needed(order_id: int) -> bool:
-    """
-    Mark paid ONLY if current status is 'active' or 'creating'.
-    Never revert from 'sent' back to 'paid'.
-    Returns True if changed to paid.
-    """
-    now = int(time.time())
-    async with db_connect() as db:
-        cur = await db.execute("""
-            UPDATE orders
-            SET status='paid', paid_at=?, updated_at=?, error=NULL
-            WHERE order_id=? AND status IN ('active','creating')
-        """, (now, now, order_id))
-        await db.commit()
-        return cur.rowcount == 1
-
-
-async def db_mark_expired_if_needed(order_id: int) -> bool:
-    now = int(time.time())
-    async with db_connect() as db:
-        cur = await db.execute("""
-            UPDATE orders
-            SET status='expired', updated_at=?, error='Invoice expired'
-            WHERE order_id=? AND status IN ('active','creating')
-        """, (now, order_id))
-        await db.commit()
-        return cur.rowcount == 1
-
-
-async def db_claim_sending(order_id: int) -> bool:
-    """
-    Atomic claim: only one worker can move paid -> sending.
-    Returns True if successfully claimed.
-    """
-    now = int(time.time())
-    async with db_connect() as db:
-        cur = await db.execute("""
-            UPDATE orders
-            SET status='sending', updated_at=?
-            WHERE order_id=? AND status='paid'
-        """, (now, order_id))
-        await db.commit()
-        return cur.rowcount == 1
-
-
-async def db_mark_sent(order_id: int):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            UPDATE orders
-            SET status='sent', sent_at=?, updated_at=?, error=NULL
-            WHERE order_id=?
-        """, (now, now, order_id))
+        await db.execute("UPDATE inline_ctx SET anonymous=? WHERE token=?", (int(anonymous), token))
         await db.commit()
 
 
-async def db_mark_failed(order_id: int, error: str):
-    now = int(time.time())
+async def db_cleanup_inline_ctx():
+    cutoff = int(time.time()) - INLINE_CTX_TTL_SEC
     async with db_connect() as db:
-        await db.execute("""
-            UPDATE orders
-            SET status='failed', updated_at=?, error=?
-            WHERE order_id=?
-        """, (now, error, order_id))
+        await db.execute("DELETE FROM inline_ctx WHERE created_at < ?", (cutoff,))
         await db.commit()
+
+
+async def db_guard_once(message_key: str) -> bool:
+    now = int(time.time())
+    try:
+        async with db_connect() as db:
+            await db.execute("INSERT INTO sent_guard(message_key, created_at) VALUES(?,?)", (message_key, now))
+            await db.commit()
+        return True
+    except Exception:
+        return False
 
 
 # =========================
-# Crypto Pay API
+# Helpers
 # =========================
-class CryptoPayAPI:
-    def __init__(self, token: str, base_url: str):
-        self.token = token
-        self.base_url = base_url
-        self.session: Optional[aiohttp.ClientSession] = None
+def normalize_target(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.lower() == "me":
+        return "me"
+    if s.startswith("@"):
+        return s
+    if s.isdigit():
+        return s
+    return "@" + s
 
-    async def start(self):
-        if self.session:
-            return
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
 
-    async def stop(self):
-        if self.session:
-            await self.session.close()
-            self.session = None
+def clean_comment(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = raw.strip().replace("\r", " ").replace("\n", " ")
+    if not s:
+        return None
+    if len(s) > 120:
+        s = s[:120]
+    return s
 
-    async def _post(self, method_name: str, params: Optional[dict] = None) -> dict:
-        if not self.session:
-            raise RuntimeError("CryptoPayAPI not started")
-        url = f"{self.base_url}/api/{method_name}"
-        headers = {
-            "Crypto-Pay-API-Token": self.token,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        async with self.session.post(url, headers=headers, json=(params or {})) as resp:
-            data = await resp.json(content_type=None)
-            if not isinstance(data, dict) or data.get("ok") is not True:
-                raise RuntimeError(f"CryptoPay API error ({method_name}): {data}")
-            return data["result"]
 
-    async def get_me(self) -> dict:
-        return await self._post("getMe")
+def mode_text(lang: str, anonymous: int) -> str:
+    if (anonymous or 0) == 1:
+        return "anon" if lang == "en" else ("anon" if lang == "ru" else "anon")
+    return "show" if lang == "en" else ("show" if lang == "ru" else "show")
 
-    async def create_invoice(
-        self,
-        *,
-        description: str,
-        payload: str,
-        amount: str,
-        currency_type: str,
-        asset: Optional[str] = None,
-        fiat: Optional[str] = None,
-        accepted_assets: Optional[str] = None,
-        expires_in: Optional[int] = None,
-        allow_comments: bool = False,
-        allow_anonymous: bool = True,
-        paid_btn_url: Optional[str] = None,
-    ) -> dict:
-        params: dict = {
-            "currency_type": currency_type,
-            "amount": amount,
-            "description": description[:1024],
-            "payload": payload[:4096],
-            "allow_comments": allow_comments,
-            "allow_anonymous": allow_anonymous,
-        }
-        if expires_in:
-            params["expires_in"] = int(expires_in)
 
-        if paid_btn_url:
-            params["paid_btn_name"] = "openBot"
-            params["paid_btn_url"] = paid_btn_url
+def parse_inline_query(q: str, prefs_target: Optional[str], prefs_comment: Optional[str], prefs_anon: int):
+    """
+    Format:
+      "<max_stars> [target] | comment | anon/show"
+    Examples:
+      "50"
+      "50 @user"
+      "50 @user | :)"
+      "50 @user | hello | anon"
+      "50 | hi | show"   (uses default target)
+    """
+    q = (q or "").strip()
+    if not q:
+        return None
 
-        if currency_type == "crypto":
-            params["asset"] = asset
-        else:
-            params["fiat"] = fiat
-            if accepted_assets:
-                params["accepted_assets"] = accepted_assets
+    parts = [p.strip() for p in q.split("|")]
+    head = parts[0]
+    head_tokens = head.split()
+    if not head_tokens or not head_tokens[0].isdigit():
+        return None
 
-        return await self._post("createInvoice", params)
+    max_stars = int(head_tokens[0])
+    target = None
+    if len(head_tokens) >= 2:
+        target = normalize_target(head_tokens[1])
 
-    async def get_invoices(self, *, invoice_ids: str) -> List[dict]:
-        result = await self._post("getInvoices", {"invoice_ids": invoice_ids, "count": 1000})
-        return result.get("items", [])
+    comment = None
+    if len(parts) >= 2:
+        comment = clean_comment(parts[1])
+    if comment is None:
+        comment = clean_comment(prefs_comment)
+
+    mode = None
+    if len(parts) >= 3:
+        mode = parts[2].strip().lower()
+
+    anonymous = prefs_anon
+    if mode in ("anon", "anonymous", "hide"):
+        anonymous = 1
+    elif mode in ("show", "profile", "name"):
+        anonymous = 0
+
+    if target is None:
+        target = normalize_target(prefs_target)
+
+    return max_stars, target, comment, anonymous
+
+
+def make_inline_token(user_id: int) -> str:
+    # short token
+    rnd = uuid.uuid4().hex[:10]
+    return f"{user_id:x}{rnd}"
 
 
 # =========================
-# Relayer (Telethon)
+# Telethon relayer pool
 # =========================
-class Relayer:
+class RelayerPool:
     def __init__(self):
-        self.client = TelegramClient(
-            StringSession(RELAYER_SESSION),
-            TG_API_ID,
-            TG_API_HASH,
-            timeout=25,
-            connection_retries=5,
-            retry_delay=2,
-            auto_reconnect=True,
-        )
-        self._lock = asyncio.Lock()
-
-    async def start(self):
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            raise RuntimeError("RELAYER_SESSION invalid. QR bilan qayta session oling.")
-        return await self.client.get_me()
-
-    async def stop(self):
-        await self.client.disconnect()
+        self._clients: Dict[str, TelegramClient] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._start_lock = asyncio.Lock()
 
     @staticmethod
-    def _clean_comment(s: Optional[str]) -> Optional[str]:
-        if not s:
-            return None
-        t0 = s.strip().replace("\r", " ").replace("\n", " ")
-        if not t0:
-            return None
-        if len(t0) > 120:
-            t0 = t0[:120]
-        return t0
+    def _key(session_string: str) -> str:
+        h = hashlib.sha256(session_string.encode("utf-8")).hexdigest()
+        return h[:16]
+
+    async def _get_client(self, session_string: str) -> TelegramClient:
+        k = self._key(session_string)
+        if k in self._clients:
+            return self._clients[k]
+
+        async with self._start_lock:
+            if k in self._clients:
+                return self._clients[k]
+
+            client = TelegramClient(
+                StringSession(session_string),
+                TG_API_ID,
+                TG_API_HASH,
+                timeout=25,
+                connection_retries=5,
+                retry_delay=2,
+                auto_reconnect=True,
+            )
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                raise RuntimeError("Session invalid / expired. Re-generate SESSION_STRING.")
+            self._clients[k] = client
+            self._locks[k] = asyncio.Lock()
+            return client
 
     async def send_star_gift(
         self,
         *,
+        session_string: str,
         target: Union[str, int],
         gift: GiftItem,
         comment: Optional[str],
         hide_name: bool,
     ) -> bool:
-        async with self._lock:
-            can = await self.client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
+        client = await self._get_client(session_string)
+        k = self._key(session_string)
+        lock = self._locks[k]
+
+        async with lock:
+            can = await client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
             if isinstance(can, types.payments.CheckCanSendGiftResultFail):
                 reason = getattr(can.reason, "text", None) or str(can.reason)
                 raise RuntimeError(f"Can't send gift: {reason}")
 
             try:
-                peer = await self.client.get_input_entity(target)
+                peer = await client.get_input_entity(target)
             except Exception:
                 if isinstance(target, int):
                     raise RuntimeError(
-                        "❌ user_id orqali entity topilmadi.\n"
-                        "✅ @username ishlating yoki qabul qiluvchi relayerga 1 marta yozsin."
+                        "user_id orqali entity topilmadi. Eng yaxshisi @username ishlating "
+                        "(yoki qabul qiluvchi relayerga 1 marta yozsin)."
                     )
                 raise
 
-            cleaned = self._clean_comment(comment)
+            cleaned = clean_comment(comment)
             msg_obj = None
             if cleaned:
                 msg_obj = types.TextWithEntities(text=cleaned, entities=[])
@@ -890,8 +648,8 @@ class Relayer:
                     message=message_obj,
                     **extra
                 )
-                form = await self.client(functions.payments.GetPaymentFormRequest(invoice=invoice))
-                await self.client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
+                form = await client(functions.payments.GetPaymentFormRequest(invoice=invoice))
+                await client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=invoice))
 
             if msg_obj is None:
                 await _try_send(None)
@@ -906,700 +664,440 @@ class Relayer:
                     return False
                 raise
 
-
-# =========================
-# Utils
-# =========================
-def calc_invoice_amount(stars: int) -> float:
-    amt = stars * PRICE_PER_STAR
-    if amt < PRICE_MIN:
-        amt = PRICE_MIN
-    return float(f"{amt:.2f}")
-
-
-def normalize_target(text: str) -> str:
-    t0 = (text or "").strip()
-    if not t0:
-        return "me"
-    if t0.lower() == "me":
-        return "me"
-    if t0.startswith("@"):
-        return t0
-    if t0.isdigit():
-        return t0
-    return "@" + t0
-
-
-def safe_comment(text: str) -> str:
-    t0 = (text or "").strip()
-    if len(t0) > 250:
-        t0 = t0[:250]
-    return t0
-
-
-def resolve_target_for_user(stored_target: str, user_id: int, username: Optional[str]) -> Union[str, int]:
-    t0 = (stored_target or "me").strip()
-    if t0.lower() == "me":
-        return ("@" + username) if username else user_id
-    if t0.startswith("@"):
-        return t0
-    if t0.isdigit():
-        return int(t0)
-    return "@" + t0
-
-
-async def admin_notify(text: str, bot: Bot):
-    if ADMIN_CHAT_ID and ADMIN_CHAT_ID != 0:
-        try:
-            await bot.send_message(ADMIN_CHAT_ID, text)
-        except Exception:
-            pass
-
-
-async def safe_edit_message_obj(msg, *, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
-    """
-    Avoid 'message is not modified' when user clicks buttons repeatedly.
-    """
-    try:
-        cur_text = getattr(msg, "text", None) or ""
-        cur_kb = getattr(msg, "reply_markup", None)
-        if cur_text == text and ((reply_markup is None and cur_kb is None) or (reply_markup is not None and cur_kb == reply_markup)):
-            return False
-        await msg.edit_text(text, reply_markup=reply_markup)
-        return True
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e).lower():
-            return False
-        raise
-
-
-async def safe_edit_by_id(bot: Bot, chat_id: int, message_id: int, *, text: str, reply_markup: Optional[InlineKeyboardMarkup]):
-    try:
-        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e).lower():
-            return
-        # if message deleted/invalid - ignore silently
-        if "message to edit not found" in str(e).lower() or "message can't be edited" in str(e).lower():
-            return
-        raise
-    except Exception:
-        return
+    async def stop_all(self):
+        for c in list(self._clients.values()):
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+        self._clients.clear()
+        self._locks.clear()
 
 
 # =========================
-# UI builders
+# Bot + UI
 # =========================
-def main_menu_kb(lang: str, anonymous: int) -> InlineKeyboardMarkup:
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+pool = RelayerPool()
+
+
+def inline_kb(lang: str, token: str, gift_id: int, anonymous: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, "menu_recipient"), callback_data="menu:target")
-    kb.button(text=t(lang, "menu_comment"), callback_data="menu:comment")
-    kb.button(text=t(lang, "menu_gift"), callback_data="menu:gift")
-    kb.button(
-        text=(t(lang, "menu_mode_anon") if anonymous == 1 else t(lang, "menu_mode_profile")),
-        callback_data="toggle:anon"
-    )
-    kb.button(text=t(lang, "menu_invoice"), callback_data="pay:create")
-    kb.button(text=t(lang, "menu_lang"), callback_data="lang:menu")
-    kb.adjust(2, 2, 2)
-    return kb.as_markup()
-
-
-def back_menu_kb(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
-    return kb.as_markup()
-
-
-def price_kb(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for p in ALLOWED_PRICES:
-        kb.button(text=f"⭐ {p}", callback_data=f"price:{p}")
-    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
-    kb.adjust(2, 2, 1)
-    return kb.as_markup()
-
-
-def gifts_by_price_kb(lang: str, price: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for g in GIFTS_BY_PRICE.get(price, []):
-        kb.button(text=f"{g.label}", callback_data=f"gift:{g.id}")
-    kb.button(text=t(lang, "back_prices"), callback_data="menu:gift")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def pay_invoice_kb(lang: str, invoice_url: str, order_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, "invoice_open"), url=invoice_url)
-    kb.button(text=t(lang, "invoice_check"), callback_data=f"pay:check:{order_id}")
-    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
+    kb.button(text=t(lang, "btn_send"), callback_data=f"act:send:{token}:{gift_id}")
+    kb.button(text=t(lang, "btn_toggle"), callback_data=f"act:toggle:{token}:{gift_id}")
+    kb.button(text=t(lang, "btn_cancel"), callback_data=f"act:cancel:{token}:{gift_id}")
     kb.adjust(1, 2)
     return kb.as_markup()
 
 
-def paid_done_kb(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
-    return kb.as_markup()
-
-
-def lang_pick_kb(lang: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🇺🇿 UZ", callback_data="lang:set:uz")
-    kb.button(text="🇷🇺 RU", callback_data="lang:set:ru")
-    kb.button(text="🇬🇧 EN", callback_data="lang:set:en")
-    kb.button(text=t(lang, "back_menu"), callback_data="menu:home")
-    kb.adjust(3, 1)
-    return kb.as_markup()
-
-
-async def render_status_text_and_kb(user_id: int) -> Tuple[str, InlineKeyboardMarkup, str]:
-    target, comment, sel_gift_id, anonymous, lang = await db_get_settings(user_id)
-
-    gift_txt = t(lang, "gift_none")
-    if sel_gift_id and sel_gift_id in GIFTS_BY_ID:
-        g = GIFTS_BY_ID[sel_gift_id]
-        gift_txt = f"{g.label} (⭐{g.stars})"
-
-    comment_txt = comment if comment else t(lang, "comment_empty")
-    mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
-
-    text = (
-        f"{t(lang, 'status_title')}\n"
-        f"{t(lang, 'status_target', target=target)}\n"
-        f"{t(lang, 'status_comment', comment=comment_txt)}\n"
-        f"{t(lang, 'status_gift', gift=gift_txt)}\n"
-        f"{t(lang, 'status_mode', mode=mode_txt)}\n"
-        f"{t(lang, 'status_choose')}"
-    )
-    return text, main_menu_kb(lang, anonymous), lang
-
-
-# =========================
-# App objects
-# =========================
-bot = Bot(BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-cryptopay = CryptoPayAPI(CRYPTOPAY_TOKEN, CRYPTOPAY_BASE_URL)
-relayer = Relayer()
-
-# local in-process guard for same order task spam
-_processing: set[int] = set()
-_processing_lock = asyncio.Lock()
-
-
-# =========================
-# Delivery core
-# =========================
-async def _update_origin_message(order: dict, lang: str, text: str, done: bool):
-    chat_id = order.get("origin_chat_id")
-    msg_id = order.get("origin_message_id")
-    if chat_id and msg_id:
-        kb = paid_done_kb(lang) if done else paid_done_kb(lang)
-        await safe_edit_by_id(bot, int(chat_id), int(msg_id), text=text, reply_markup=kb)
-
-
-async def process_order_send(order_id: int):
-    """
-    Sends gift exactly once:
-    - requires order.status == 'paid'
-    - atomically claims paid->sending using db_claim_sending
-    - marks sent/failed
-    """
-    async with _processing_lock:
-        if order_id in _processing:
-            return
-        _processing.add(order_id)
-
+async def safe_edit_inline(callback: CallbackQuery, text: str, reply_markup: Optional[InlineKeyboardMarkup]):
     try:
-        order = await db_get_order(order_id)
-        if not order:
-            return
-
-        user_id = int(order["user_id"])
-        _, _, _, _, lang = await db_get_settings(user_id)
-
-        # if already sent/sending -> do nothing
-        if order["status"] == "sent":
-            return
-        if order["status"] == "sending":
-            return
-
-        # claim paid->sending atomically (prevents double-send)
-        claimed = await db_claim_sending(order_id)
-        if not claimed:
-            # maybe not paid yet / already claimed / already sent
-            return
-
-        # update origin message: sending
-        await _update_origin_message(order, lang, t(lang, "paid_sending"), done=False)
-
-        gift = GIFTS_BY_ID.get(int(order["gift_id"]))
-        if not gift:
-            raise RuntimeError("Gift not found in catalog")
-
-        stored_target = str(order["target"])
-        if stored_target.startswith("@"):
-            target: Union[str, int] = stored_target
-        elif stored_target.isdigit():
-            target = int(stored_target)
-        else:
-            target = stored_target
-
-        comment = order.get("comment")
-        anonymous = int(order.get("anonymous") or 0)
-        mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
-
-        comment_attached = await relayer.send_star_gift(
-            target=target,
-            gift=gift,
-            comment=comment,
-            hide_name=(anonymous == 1),
-        )
-
-        await db_mark_sent(order_id)
-
-        # update origin message: sent (no more check button!)
-        done_text = t(lang, "already_sent")
-        await _update_origin_message(order, lang, done_text, done=True)
-
-        comment_line = ""
-        comment_warn = ""
-        if comment:
-            comment_line = t(lang, "comment_line", comment=comment)
-            if not comment_attached:
-                comment_warn = t(lang, "comment_warn")
-
-        await bot.send_message(
-            user_id,
-            t(
-                lang,
-                "delivery_sent_dm",
-                order=order_id,
-                gift=gift.label,
-                stars=gift.stars,
-                target=stored_target,
-                mode=mode_txt,
-                comment_line=comment_line,
-                comment_warn=comment_warn,
+        if callback.inline_message_id:
+            await bot.edit_message_text(
+                inline_message_id=callback.inline_message_id,
+                text=text,
+                reply_markup=reply_markup,
             )
-        )
-
-    except Exception as e:
-        err = str(e)
-        await db_mark_failed(order_id, err)
-        try:
-            order = await db_get_order(order_id)
-            if order:
-                user_id = int(order["user_id"])
-                _, _, _, _, lang = await db_get_settings(user_id)
-                await _update_origin_message(order, lang, t(lang, "delivery_failed_dm", order=order_id, err=err), done=True)
-                await bot.send_message(user_id, t(lang, "delivery_failed_dm", order=order_id, err=err))
-        except Exception:
-            pass
-        await admin_notify(f"❌ Delivery failed | order #{order_id} | {err}", bot)
-    finally:
-        async with _processing_lock:
-            _processing.discard(order_id)
-
-
-# =========================
-# Invoice watcher (polling)
-# =========================
-async def invoice_watcher():
-    while True:
-        try:
-            rows = await db_list_active_invoice_orders(limit=200)
-            if not rows:
-                await asyncio.sleep(INVOICE_POLL_INTERVAL)
-                continue
-
-            invoice_ids = [str(int(r["invoice_id"])) for r in rows if r.get("invoice_id") is not None]
-            if not invoice_ids:
-                await asyncio.sleep(INVOICE_POLL_INTERVAL)
-                continue
-
-            # CryptoPay supports invoice_ids list as comma separated
-            chunk_size = 80
-            for i in range(0, len(invoice_ids), chunk_size):
-                chunk = invoice_ids[i:i + chunk_size]
-                items = await cryptopay.get_invoices(invoice_ids=",".join(chunk))
-
-                # Map invoice_id -> status
-                inv_status = {}
-                for inv in items:
-                    try:
-                        inv_id = str(int(inv.get("invoice_id")))
-                        inv_status[inv_id] = inv.get("status")
-                    except Exception:
-                        continue
-
-                for r in rows:
-                    inv_id = str(int(r["invoice_id"]))
-                    st = inv_status.get(inv_id)
-                    if not st:
-                        continue
-
-                    oid = int(r["order_id"])
-
-                    if st == "paid":
-                        # mark paid only if active/creating (never revert sent)
-                        changed = await db_mark_paid_if_needed(oid)
-                        # if paid already (changed False), still try send (safe claim prevents duplicates)
-                        asyncio.create_task(process_order_send(oid), name=f"send_{oid}")
-
-                    elif st == "expired":
-                        await db_mark_expired_if_needed(oid)
-
-            await asyncio.sleep(INVOICE_POLL_INTERVAL)
-
-        except asyncio.CancelledError:
+        else:
+            await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        # Fix: "message is not modified"
+        if "message is not modified" in str(e).lower():
             return
-        except Exception as e:
-            log.error("invoice_watcher error: %s", e)
-            await asyncio.sleep(max(5.0, INVOICE_POLL_INTERVAL))
+        raise
+
+
+async def require_admin(user_id: int) -> Tuple[bool, str, str]:
+    ok, role = await db_is_admin(user_id)
+    lang, _, _, _ = await db_get_prefs(user_id)
+    return ok, role, lang
+
+
+def resolve_target_for_send(target: str, from_user: Message) -> Union[str, int]:
+    # target is stored as "me" or "@x" or digits
+    if target == "me":
+        if from_user.from_user.username:
+            return "@" + from_user.from_user.username
+        return int(from_user.from_user.id)
+    if target.startswith("@"):
+        return target
+    if target.isdigit():
+        return int(target)
+    return target
 
 
 # =========================
-# States
-# =========================
-class Form(StatesGroup):
-    waiting_target = State()
-    waiting_comment = State()
-
-
-# =========================
-# Handlers
+# Commands (admin-only)
 # =========================
 @dp.message(Command("start"))
-async def cmd_start(m: Message, state: FSMContext):
-    await state.clear()
-    default_target = f"@{m.from_user.username}" if m.from_user.username else str(m.from_user.id)
-    await db_ensure_user(m.from_user.id, default_target=default_target)
-    text, kb, _lang = await render_status_text_and_kb(m.from_user.id)
-    await m.answer(text, reply_markup=kb)
+async def cmd_start(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+
+    await db_cleanup_inline_ctx()
+    await m.answer(t(lang, "start_admin", bot=(await bot.get_me()).username))
 
 
-@dp.message(Command("menu"))
-async def cmd_menu(m: Message, state: FSMContext):
-    await state.clear()
-    await db_ensure_user(m.from_user.id)
-    text, kb, _lang = await render_status_text_and_kb(m.from_user.id)
-    await m.answer(text, reply_markup=kb)
+@dp.message(Command("help"))
+async def cmd_help(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    await m.answer(t(lang, "help"))
 
 
-@dp.callback_query(F.data == "menu:home")
-async def menu_home(c: CallbackQuery, state: FSMContext):
-    await c.answer()
-    await state.clear()
-    await db_ensure_user(c.from_user.id)
-    text, kb, _lang = await render_status_text_and_kb(c.from_user.id)
-    await safe_edit_message_obj(c.message, text=text, reply_markup=kb)
+@dp.message(Command("lang"))
+async def cmd_lang(m: Message):
+    ok, _, _ = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    parts = (m.text or "").split()
+    if len(parts) < 2:
+        lang, _, _, _ = await db_get_prefs(m.from_user.id)
+        return await m.answer(f"lang={lang} (ru|uz|en)")
+    new_lang = parts[1].lower().strip()
+    if new_lang not in ("ru", "uz", "en"):
+        return await m.answer("ru|uz|en")
+    await db_set_lang(m.from_user.id, new_lang)
+    await m.answer(t(new_lang, "lang_set", lang=new_lang))
 
 
-@dp.callback_query(F.data == "toggle:anon")
-async def toggle_anon(c: CallbackQuery, state: FSMContext):
-    await c.answer()
-    await state.clear()
-    await db_ensure_user(c.from_user.id)
-    new_val = await db_toggle_anonymous(c.from_user.id)
-    text, kb, lang = await render_status_text_and_kb(c.from_user.id)
-    note = t(lang, "toggle_anon_on") if new_val == 1 else t(lang, "toggle_anon_off")
-    await safe_edit_message_obj(c.message, text=note + "\n\n" + text, reply_markup=kb)
+@dp.message(Command("set_target"))
+async def cmd_set_target(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("Usage: /set_target me | @username | user_id")
+    target = normalize_target(parts[1])
+    await db_set_target(m.from_user.id, target)
+    await m.answer(t(lang, "target_set", target=target))
 
 
-@dp.callback_query(F.data == "lang:menu")
-async def lang_menu(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-    await safe_edit_message_obj(c.message, text=t(lang, "lang_pick"), reply_markup=lang_pick_kb(lang))
-
-
-@dp.callback_query(F.data.startswith("lang:set:"))
-async def lang_set(c: CallbackQuery):
-    await c.answer()
-    lang_new = c.data.split(":")[-1].strip().lower()
-    await db_ensure_user(c.from_user.id)
-    await db_set_lang(c.from_user.id, lang_new)
-    text, kb, lang = await render_status_text_and_kb(c.from_user.id)
-    await safe_edit_message_obj(c.message, text=t(lang, "lang_set") + "\n\n" + text, reply_markup=kb)
-
-
-@dp.callback_query(F.data == "menu:target")
-async def menu_target(c: CallbackQuery, state: FSMContext):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-    await state.set_state(Form.waiting_target)
-    await safe_edit_message_obj(c.message, text=t(lang, "prompt_target"), reply_markup=back_menu_kb(lang))
-
-
-@dp.callback_query(F.data == "menu:comment")
-async def menu_comment(c: CallbackQuery, state: FSMContext):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-    await state.set_state(Form.waiting_comment)
-    await safe_edit_message_obj(c.message, text=t(lang, "prompt_comment"), reply_markup=back_menu_kb(lang))
-
-
-@dp.callback_query(F.data == "menu:gift")
-async def menu_gift(c: CallbackQuery, state: FSMContext):
-    await c.answer()
-    await state.clear()
-    await db_ensure_user(c.from_user.id)
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-    await safe_edit_message_obj(c.message, text=t(lang, "pick_price"), reply_markup=price_kb(lang))
-
-
-@dp.callback_query(F.data.startswith("price:"))
-async def choose_price(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-    price = int(c.data.split(":", 1)[1])
-    if price not in GIFTS_BY_PRICE:
-        return await safe_edit_message_obj(c.message, text=t(lang, "pick_price"), reply_markup=price_kb(lang))
-    await safe_edit_message_obj(c.message, text=t(lang, "pick_by_price", price=price), reply_markup=gifts_by_price_kb(lang, price))
-
-
-@dp.callback_query(F.data.startswith("gift:"))
-async def choose_gift(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    gift_id = int(c.data.split(":", 1)[1])
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-
-    if gift_id not in GIFTS_BY_ID:
-        return await safe_edit_message_obj(c.message, text=t(lang, "pick_price"), reply_markup=price_kb(lang))
-
-    await db_set_selected_gift(c.from_user.id, gift_id)
-    g = GIFTS_BY_ID[gift_id]
-    _, _, _, anonymous, lang = await db_get_settings(c.from_user.id)
-
-    await safe_edit_message_obj(
-        c.message,
-        text=t(lang, "gift_selected", label=g.label, stars=g.stars),
-        reply_markup=main_menu_kb(lang, anonymous)
-    )
-
-
-@dp.message(Form.waiting_target)
-async def set_target(m: Message, state: FSMContext):
-    await db_ensure_user(m.from_user.id)
-    target_norm = normalize_target(m.text or "")
-    await db_set_target(m.from_user.id, target_norm)
-    await state.clear()
-    text, kb, lang = await render_status_text_and_kb(m.from_user.id)
-    await m.answer(t(lang, "saved_target", status=text), reply_markup=kb)
-
-
-@dp.message(Form.waiting_comment)
-async def set_comment(m: Message, state: FSMContext):
-    await db_ensure_user(m.from_user.id)
-    raw = (m.text or "").strip()
-    _, _, _, _, lang = await db_get_settings(m.from_user.id)
-
-    if raw == "-" or raw.lower() in ("off", "none", "null"):
+@dp.message(Command("set_comment"))
+async def cmd_set_comment(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("Usage: /set_comment off | текст")
+    raw = parts[1].strip()
+    if raw.lower() in ("off", "none", "-"):
         await db_set_comment(m.from_user.id, None)
-        await state.clear()
-        text, kb, lang = await render_status_text_and_kb(m.from_user.id)
-        return await m.answer(t(lang, "deleted_comment", status=text), reply_markup=kb)
+        return await m.answer(t(lang, "comment_cleared"))
+    await db_set_comment(m.from_user.id, clean_comment(raw))
+    await m.answer(t(lang, "comment_set"))
 
-    comment = safe_comment(raw)
-    await db_set_comment(m.from_user.id, comment)
-    await state.clear()
-    text, kb, lang = await render_status_text_and_kb(m.from_user.id)
-    await m.answer(t(lang, "saved_comment", status=text), reply_markup=kb)
+
+@dp.message(Command("mode"))
+async def cmd_mode(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    parts = (m.text or "").split()
+    if len(parts) < 2:
+        _, _, _, anon = await db_get_prefs(m.from_user.id)
+        return await m.answer(f"mode={'anon' if anon==1 else 'show'} (anon|show)")
+    v = parts[1].lower().strip()
+    if v not in ("anon", "show"):
+        return await m.answer("anon|show")
+    await db_set_mode(m.from_user.id, 1 if v == "anon" else 0)
+    await m.answer(t(lang, "mode_set", mode=v))
+
+
+@dp.message(Command("session_set"))
+async def cmd_session_set(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("Usage: /session_set <SESSION_STRING>")
+    session_string = parts[1].strip()
+
+    # Quick sanity check: try connect
+    try:
+        # will raise if invalid
+        await pool._get_client(session_string)
+    except Exception as e:
+        return await m.answer(t(lang, "fail", e=str(e)))
+
+    await db_set_session(m.from_user.id, session_string)
+    await m.answer(t(lang, "session_saved"))
+
+
+@dp.message(Command("session_clear"))
+async def cmd_session_clear(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    await db_clear_session(m.from_user.id)
+    await m.answer(t(lang, "session_cleared"))
+
+
+@dp.message(Command("admin_add"))
+async def cmd_admin_add(m: Message):
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    if role != "owner":
+        return await m.answer(t(lang, "owner_only"))
+
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("Usage: /admin_add <user_id>")
+    raw = parts[1].strip()
+    if raw.startswith("@"):
+        # bots can't reliably resolve user_id by username unless user interacted.
+        return await m.answer("❌ @username bo‘yicha qo‘shish uchun user_id kerak. Masalan: /admin_add 123456789")
+    if not raw.isdigit():
+        return await m.answer("user_id (digits) required")
+    uid = int(raw)
+
+    await db_add_admin(m.from_user.id, uid)
+    await m.answer(t(lang, "admin_added", uid=uid))
+
+
+@dp.message(Command("admin_remove"))
+async def cmd_admin_remove(m: Message):
+    ok, role, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    if role != "owner":
+        return await m.answer(t(lang, "owner_only"))
+
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("Usage: /admin_remove <user_id>")
+    raw = parts[1].strip()
+    if not raw.isdigit():
+        return await m.answer("user_id (digits) required")
+    uid = int(raw)
+
+    await db_remove_admin(uid)
+    await m.answer(t(lang, "admin_removed", uid=uid))
+
+
+@dp.message(Command("admin_list"))
+async def cmd_admin_list(m: Message):
+    ok, _, lang = await require_admin(m.from_user.id)
+    if not ok:
+        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    rows = await db_list_admins()
+    lines = []
+    for uid, role, active in rows:
+        lines.append(f"- {uid} | {role} | {'ON' if active==1 else 'OFF'}")
+    await m.answer(t(lang, "admin_list", rows="\n".join(lines)))
 
 
 # =========================
-# Payments
+# Inline mode
 # =========================
-@dp.callback_query(F.data == "pay:create")
-async def pay_create(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
+@dp.inline_query()
+async def inline_handler(q: InlineQuery):
+    ok, _, lang = await require_admin(q.from_user.id)
+    if not ok:
+        return await q.answer([], is_personal=True, cache_time=1)
 
-    target_str, comment, sel_gift_id, anonymous, lang = await db_get_settings(c.from_user.id)
-    if not sel_gift_id or sel_gift_id not in GIFTS_BY_ID:
-        status_text, status_kb, lang = await render_status_text_and_kb(c.from_user.id)
-        return await safe_edit_message_obj(
-            c.message,
-            text=t(lang, "need_gift_first", status=status_text),
-            reply_markup=status_kb
+    bot_me = await bot.get_me()
+    bot_username = bot_me.username or "YourBot"
+
+    prefs_lang, prefs_target, prefs_comment, prefs_anon = await db_get_prefs(q.from_user.id)
+
+    parsed = parse_inline_query(q.query, prefs_target, prefs_comment, prefs_anon)
+    if not parsed:
+        hint = t(prefs_lang, "inline_bad", bot=bot_username)
+        res = InlineQueryResultArticle(
+            id="help",
+            title="Usage",
+            description=hint,
+            input_message_content=InputTextMessageContent(message_text=hint),
+        )
+        return await q.answer([res], is_personal=True, cache_time=1)
+
+    max_stars, target, comment, anonymous = parsed
+    if not target:
+        hint = t(prefs_lang, "inline_need_target", bot=bot_username)
+        res = InlineQueryResultArticle(
+            id="need_target",
+            title="Target required",
+            description=hint,
+            input_message_content=InputTextMessageContent(message_text=hint),
+        )
+        return await q.answer([res], is_personal=True, cache_time=1)
+
+    token = make_inline_token(q.from_user.id)
+    await db_put_inline_ctx(token, q.from_user.id, target, comment, anonymous)
+
+    gifts = [g for g in GIFT_CATALOG if g.stars <= max_stars]
+    if not gifts:
+        res = InlineQueryResultArticle(
+            id="none",
+            title="No gifts",
+            description=f"<= {max_stars}★ not found",
+            input_message_content=InputTextMessageContent(message_text="No gifts for this price."),
+        )
+        return await q.answer([res], is_personal=True, cache_time=1)
+
+    results = []
+    comment_text = comment if comment else "(none)" if prefs_lang == "en" else ("(yo‘q)" if prefs_lang == "uz" else "(нет)")
+    mode = "anon" if anonymous == 1 else "show"
+
+    for g in gifts[:30]:
+        title = t(prefs_lang, "inline_title", label=g.label, stars=g.stars)
+        desc = t(prefs_lang, "inline_desc", target=target, mode=mode)
+
+        preview = t(
+            prefs_lang,
+            "msg_preview",
+            label=g.label,
+            stars=g.stars,
+            target=target,
+            mode=mode,
+            comment=comment_text,
+        ) + "\n\n" + t(prefs_lang, "note_anon")
+
+        results.append(
+            InlineQueryResultArticle(
+                id=f"{token}:{g.id}",
+                title=title,
+                description=desc,
+                input_message_content=InputTextMessageContent(message_text=preview),
+                reply_markup=inline_kb(prefs_lang, token, g.id, anonymous),
+            )
         )
 
-    gift = GIFTS_BY_ID[sel_gift_id]
-    target = resolve_target_for_user(target_str, c.from_user.id, c.from_user.username)
+    await q.answer(results, is_personal=True, cache_time=1)
 
-    amount = calc_invoice_amount(gift.stars)
-    amount_str = f"{amount:.2f}"
-    price_currency = PAY_ASSET if CURRENCY_TYPE == "crypto" else PAY_FIAT
 
-    mode_txt = t(lang, "mode_anon") if anonymous == 1 else t(lang, "mode_profile")
-    comment_txt = comment if comment else t(lang, "comment_empty")
+@dp.callback_query(F.data.startswith("act:"))
+async def inline_actions(c: CallbackQuery):
+    ok, _, lang = await require_admin(c.from_user.id)
+    if not ok:
+        return await c.answer("DENIED", show_alert=True)
 
-    order_id = await db_create_order(
-        user_id=c.from_user.id,
-        target=str(target),
-        gift=gift,
-        comment=comment,
-        anonymous=anonymous,
-        price_amount=amount_str,
-        price_currency=price_currency,
-    )
+    parts = c.data.split(":")
+    if len(parts) < 4:
+        return await c.answer("BAD", show_alert=True)
 
-    await safe_edit_message_obj(
-        c.message,
-        text=t(
+    action = parts[1]
+    token = parts[2]
+    gift_id = int(parts[3])
+
+    ctx = await db_get_inline_ctx(token)
+    if not ctx or ctx["user_id"] != c.from_user.id:
+        return await c.answer("CTX expired", show_alert=True)
+
+    gift = GIFTS_BY_ID.get(gift_id)
+    if not gift:
+        return await c.answer("Gift not found", show_alert=True)
+
+    # message key for idempotency
+    if c.inline_message_id:
+        msg_key = f"inline:{c.inline_message_id}:{gift_id}"
+    else:
+        msg_key = f"msg:{c.message.chat.id}:{c.message.message_id}:{gift_id}"
+
+    target = ctx["target"]
+    comment = ctx["comment"]
+    anonymous = int(ctx["anonymous"] or 0)
+    mode = "anon" if anonymous == 1 else "show"
+
+    comment_text = comment if comment else "(none)" if lang == "en" else ("(yo‘q)" if lang == "uz" else "(нет)")
+    preview = t(
+        lang,
+        "msg_preview",
+        label=gift.label,
+        stars=gift.stars,
+        target=target,
+        mode=mode,
+        comment=comment_text,
+    ) + "\n\n" + t(lang, "note_anon")
+
+    if action == "toggle":
+        new_anon = 0 if anonymous == 1 else 1
+        await db_update_inline_mode(token, new_anon)
+        new_mode = "anon" if new_anon == 1 else "show"
+        new_preview = t(
             lang,
-            "invoice_creating",
-            order=order_id,
-            gift=gift.label,
+            "msg_preview",
+            label=gift.label,
             stars=gift.stars,
             target=target,
-            mode=mode_txt,
-            comment=comment_txt,
-            amount=amount_str,
-            cur=price_currency
-        ),
-        reply_markup=None
-    )
+            mode=new_mode,
+            comment=comment_text,
+        ) + "\n\n" + t(lang, "note_anon")
 
-    try:
-        paid_btn_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
-        inv = await cryptopay.create_invoice(
-            description=f"Telegram Gift: {gift.label} (⭐{gift.stars})",
-            payload=json.dumps({"order_id": order_id}, ensure_ascii=False),
-            amount=amount_str,
-            currency_type=("crypto" if CURRENCY_TYPE == "crypto" else "fiat"),
-            asset=(PAY_ASSET if CURRENCY_TYPE == "crypto" else None),
-            fiat=(PAY_FIAT if CURRENCY_TYPE == "fiat" else None),
-            accepted_assets=(ACCEPTED_ASSETS if CURRENCY_TYPE == "fiat" else None),
-            expires_in=INVOICE_EXPIRES_IN,
-            allow_comments=False,
-            allow_anonymous=True,
-            paid_btn_url=paid_btn_url,
-        )
+        await c.answer("OK")
+        return await safe_edit_inline(c, new_preview, inline_kb(lang, token, gift_id, new_anon))
 
-        invoice_id = int(inv["invoice_id"])
-        invoice_url = inv.get("bot_invoice_url") or inv.get("pay_url")
-        if not invoice_url:
-            raise RuntimeError(f"Invoice URL not found: {inv}")
+    if action == "cancel":
+        # mark as done so it can't be used later
+        await db_guard_once(msg_key)
+        await c.answer("OK")
+        return await safe_edit_inline(c, t(lang, "cancelled"), None)
 
-        await db_attach_invoice(order_id, invoice_id, invoice_url)
+    if action == "send":
+        # idempotency
+        allowed = await db_guard_once(msg_key)
+        if not allowed:
+            return await c.answer(t(lang, "already_done"), show_alert=True)
 
-        await safe_edit_message_obj(
-            c.message,
-            text=t(
-                lang,
-                "invoice_ready",
-                order=order_id,
-                gift=gift.label,
-                stars=gift.stars,
-                target=target,
-                amount=amount_str,
-                cur=price_currency,
-            ),
-            reply_markup=pay_invoice_kb(lang, invoice_url, order_id)
-        )
+        # pick relayer session: admin's own -> fallback default
+        session = await db_get_session(c.from_user.id)
+        if not session:
+            session = DEFAULT_RELAYER_SESSION or None
+        if not session:
+            return await c.answer(t(lang, "need_session"), show_alert=True)
 
-        # store message where invoice is shown -> we will update it when sent
-        await db_set_order_origin_message(order_id, int(c.message.chat.id), int(c.message.message_id))
+        await c.answer("OK")
+        await safe_edit_inline(c, t(lang, "sending"), None)
 
-    except Exception as e:
-        await db_mark_failed(order_id, str(e))
-        await admin_notify(f"❌ Invoice create failed | order #{order_id} | {e}", bot)
-        status_text, status_kb, lang = await render_status_text_and_kb(c.from_user.id)
-        await safe_edit_message_obj(
-            c.message,
-            text=f"❌ Invoice error: {e}\n\n{status_text}",
-            reply_markup=status_kb
-        )
-
-
-@dp.callback_query(F.data.startswith("pay:check:"))
-async def pay_check(c: CallbackQuery):
-    await c.answer()
-    await db_ensure_user(c.from_user.id)
-    _, _, _, _, lang = await db_get_settings(c.from_user.id)
-
-    order_id = int(c.data.split(":")[-1])
-    order = await db_get_order(order_id)
-
-    if not order or int(order["user_id"]) != int(c.from_user.id):
-        return await safe_edit_message_obj(c.message, text=t(lang, "check_forbidden"), reply_markup=back_menu_kb(lang))
-
-    # IMPORTANT: if already sent/sending -> do not revert status; no extra sending
-    if order["status"] == "sent":
-        return await safe_edit_message_obj(c.message, text=t(lang, "already_sent"), reply_markup=paid_done_kb(lang))
-    if order["status"] == "sending":
-        return await safe_edit_message_obj(c.message, text=t(lang, "already_sending"), reply_markup=paid_done_kb(lang))
-
-    inv_id = order.get("invoice_id")
-    if not inv_id:
-        return await safe_edit_message_obj(c.message, text=t(lang, "check_no_invoice"), reply_markup=back_menu_kb(lang))
-
-    try:
-        items = await cryptopay.get_invoices(invoice_ids=str(int(inv_id)))
-        inv = items[0] if items else None
-        if not inv:
-            return await safe_edit_message_obj(c.message, text=t(lang, "check_not_found"), reply_markup=back_menu_kb(lang))
-
-        status = inv.get("status")
-
-        if status == "paid":
-            # mark paid only if needed (won't revert sent)
-            await db_mark_paid_if_needed(order_id)
-
-            # kick sender (safe claim prevents duplicates)
-            asyncio.create_task(process_order_send(order_id), name=f"send_{order_id}")
-
-            # update this message (and store it as origin too)
-            await db_set_order_origin_message(order_id, int(c.message.chat.id), int(c.message.message_id))
-
-            return await safe_edit_message_obj(
-                c.message,
-                text=t(lang, "paid_sending"),
-                reply_markup=paid_done_kb(lang)  # no more "check" button
+        try:
+            hide_name = (anonymous == 1)
+            # NOTE: Telegram may still show sender in chat; hide_name often affects gift details.
+            comment_attached = await pool.send_star_gift(
+                session_string=session,
+                target=(target if target != "me" else ("@" + c.from_user.username if c.from_user.username else int(c.from_user.id))),
+                gift=gift,
+                comment=comment,
+                hide_name=hide_name,
             )
 
-        if status == "expired":
-            await db_mark_expired_if_needed(order_id)
-            return await safe_edit_message_obj(c.message, text=t(lang, "check_expired"), reply_markup=back_menu_kb(lang))
+            done_text = t(lang, "sent")
+            if comment and not comment_attached:
+                done_text += "\n⚠️ Comment ignored by Telegram (fallback without comment)."
+            await safe_edit_inline(c, done_text, None)
 
-        # not paid yet
-        kb = pay_invoice_kb(lang, order["invoice_url"], order_id) if order.get("invoice_url") else back_menu_kb(lang)
-        txt = t(lang, "check_status", order=order_id, status=status)
-        edited = await safe_edit_message_obj(c.message, text=txt, reply_markup=kb)
-        if not edited:
-            await c.answer("No changes.", show_alert=False)
+        except Exception as e:
+            await safe_edit_inline(c, t(lang, "fail", e=str(e)), None)
 
-    except Exception as e:
-        # show toast instead of breaking UI
-        await c.answer(f"Error: {e}", show_alert=True)
+        return
 
 
 # =========================
-# Web server (health)
+# Minimal health server (optional)
 # =========================
-async def web_health(_request: web.Request):
-    return web.json_response({"ok": True})
+async def run_health_server():
+    # optional (if your host needs a port)
+    from aiohttp import web
 
+    async def health(_):
+        return web.json_response({"ok": True})
 
-async def start_web_server() -> web.AppRunner:
     app = web.Application()
-    app.router.add_get("/", web_health)
-    app.router.add_get("/health", web_health)
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEB_BIND, PORT)
     await site.start()
-    log.info("Web server listening on %s:%s", WEB_BIND, PORT)
+    log.info("Health server on %s:%s", WEB_BIND, PORT)
     return runner
 
 
@@ -1607,38 +1105,37 @@ async def start_web_server() -> web.AppRunner:
 # Main
 # =========================
 async def main():
-    log.info("BOOT: starting...")
+    log.info("BOOT...")
     await db_init()
-    log.info("BOOT: db_init OK")
 
-    await cryptopay.start()
-    me_app = await cryptopay.get_me()
-    log.info("CryptoPay OK | app_id=%s name=%s", me_app.get("app_id"), me_app.get("name"))
+    # make sure bot sees inline username for hint
+    me = await bot.get_me()
+    log.info("Bot: @%s", me.username)
 
-    rel = await relayer.start()
-    log.info("Relayer OK | id=%s username=%s", getattr(rel, "id", None), getattr(rel, "username", None))
+    # if default relayer exists, validate once (optional)
+    if DEFAULT_RELAYER_SESSION:
+        try:
+            await pool._get_client(DEFAULT_RELAYER_SESSION)
+            log.info("Default relayer session OK")
+        except Exception as e:
+            log.warning("Default relayer invalid: %s", e)
 
-    runner = await start_web_server()
-
-    watcher_task = asyncio.create_task(invoice_watcher(), name="invoice_watcher")
+    runner = None
+    try:
+        runner = await run_health_server()
+    except Exception as e:
+        log.warning("Health server not started: %s", e)
 
     try:
-        log.info("BOOT: polling...")
+        log.info("Polling...")
         await dp.start_polling(bot)
     finally:
-        watcher_task.cancel()
-        try:
-            await watcher_task
-        except Exception:
-            pass
-
-        await cryptopay.stop()
-        await relayer.stop()
-
-        try:
-            await runner.cleanup()
-        except Exception:
-            pass
+        await pool.stop_all()
+        if runner:
+            try:
+                await runner.cleanup()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
