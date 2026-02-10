@@ -1198,7 +1198,7 @@ async def inline_action_callback(c: CallbackQuery):
 
 # =========================
 # Main
-# =========================
+# ========================
 async def main():
     log.info("BOOT: starting...")
     await db.start()
