@@ -109,7 +109,7 @@ GIFTS_BY_ID: Dict[int, GiftItem] = {g.id: g for g in GIFT_CATALOG}
 T = {
     "ru": {
         "access_denied": "⛔ Доступ запрещён.\nЭтот бот только для админов.",
-        "start_admin": "✅ Доступ разрешён.\n\nИспользование inline:\n`@{bot} 50 @username | комментарий | anon/show`\n\nПример:\n`@{bot} 50 @vremenniy_uzer | :) | anon`",
+        "start_admin": "✅ Доступ разрешён.\n\nИспользование inline:\n`@{bot} 50 @username | комментарий | anon/show`\n\nПример:\n`@{bot} 50 @Rune_13 | :) | anon`",
         "help": (
             "🛠 Команды:\n"
             "/admin_add <id|@user> — добавить админа (owner)\n"
@@ -151,7 +151,7 @@ T = {
     },
     "uz": {
         "access_denied": "⛔ Ruxsat yo‘q.\nBu bot faqat adminlar uchun.",
-        "start_admin": "✅ Ruxsat bor.\n\nInline ishlatish:\n`@{bot} 50 @username | komment | anon/show`\n\nMisol:\n`@{bot} 50 @vremenniy_uzer | :) | anon`",
+        "start_admin": "✅ Ruxsat bor.\n\nInline ishlatish:\n`@{bot} 50 @username | komment | anon/show`\n\nMisol:\n`@{bot} 50 @Rune_13 | :) | anon`",
         "help": (
             "🛠 Buyruqlar:\n"
             "/admin_add <id|@user> — admin qo‘shish (owner)\n"
@@ -189,11 +189,11 @@ T = {
         "cancelled": "❌ Bekor qilindi.",
         "already_done": "⚠️ Oldin ishlangan (qayta bo‘lmaydi).",
         "fail": "❌ Xatolik: {e}",
-        "note_anon": "ℹ️ Eslatma: hide_name gift detail’da ismni yashirishi mumkin, lekin chatda Telegram baribir yuboruvchini ko‘rsatishi mumkin.",
+        "note_anon": "ℹ️ Eslatma: hide_name gift detail’da ismni yashirishi mumkin, lekin chatda Telegram baribir yuboruvchini ko‘rsatadi.",
     },
     "en": {
         "access_denied": "⛔ Access denied. Admin-only bot.",
-        "start_admin": "✅ Access granted.\n\nInline usage:\n`@{bot} 50 @username | comment | anon/show`\n\nExample:\n`@{bot} 50 @vremenniy_uzer | :) | anon`",
+        "start_admin": "✅ Access granted.\n\nInline usage:\n`@{bot} 50 @username | comment | anon/show`\n\nExample:\n`@{bot} 50 @Rune_13 | :) | anon`",
         "help": (
             "🛠 Commands:\n"
             "/admin_add <id|@user> — add admin (owner)\n"
@@ -231,7 +231,7 @@ T = {
         "cancelled": "❌ Cancelled.",
         "already_done": "⚠️ Already processed (no duplicate).",
         "fail": "❌ Error: {e}",
-        "note_anon": "ℹ️ Note: hide_name may hide your name in gift details, but Telegram can still show the sender in chat.",
+        "note_anon": "ℹ️ Note: hide_name may hide your name in gift details, but Telegram still show the sender in chat.",
     },
 }
 
