@@ -1,10 +1,9 @@
 import os
+import re
 import time
 import json
-import uuid
 import asyncio
 import logging
-import hashlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 from contextlib import asynccontextmanager
@@ -23,25 +22,29 @@ from aiogram.types import (
     InputTextMessageContent,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import TelegramBadRequest
 
 from telethon import TelegramClient, functions, types
 from telethon.sessions import StringSession
-from telethon.errors import RPCError
+from telethon.errors import RPCError, SessionPasswordNeededError
 
 
 # =========================
-# ENV + Logging
+# Logging
 # =========================
-load_dotenv()
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=LOG_LEVEL,
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 log = logging.getLogger("giftbot")
+
+
+# =========================
+# ENV
+# =========================
+load_dotenv()
 
 
 def env_required(name: str) -> str:
@@ -55,27 +58,151 @@ BOT_TOKEN = env_required("BOT_TOKEN")
 TG_API_ID = int(env_required("TG_API_ID"))
 TG_API_HASH = env_required("TG_API_HASH")
 
-# Global fallback relayer (optional but recommended)
-DEFAULT_RELAYER_SESSION = os.getenv("RELAYER_SESSION", "").strip()
-
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
-# Owner (main admin)
-OWNER_ID = int(os.getenv("OWNER_ID", "7440949683"))
+# Bosh admin (owner)
+OWNER_ADMIN_ID = int(os.getenv("OWNER_ADMIN_ID", "7440949683"))
 
-# Web/hosting keep-alive (optional)
-PORT = int(os.getenv("PORT", "8080"))
-WEB_BIND = os.getenv("WEB_BIND", "0.0.0.0")
+# Inline natijalar nechta
+INLINE_LIMIT = int(os.getenv("INLINE_LIMIT", "10"))
 
-# Inline context TTL
-INLINE_CTX_TTL_SEC = int(os.getenv("INLINE_CTX_TTL_SEC", "600"))
+# Draft action tozalash (sekund)
+DRAFT_TTL_SECONDS = int(os.getenv("DRAFT_TTL_SECONDS", "86400"))  # 24h
 
-# Default language for everyone (you asked RU)
-DEFAULT_LANG = os.getenv("DEFAULT_LANG", "ru").lower().strip()
+# Telethon connect timeout
+TELETHON_TIMEOUT = int(os.getenv("TELETHON_TIMEOUT", "25"))
 
 
 # =========================
-# Gifts catalog (STATIC)
+# LANG
+# =========================
+T = {
+    "ru": {
+        "denied": "⛔ Доступ запрещён. Вы не администратор.",
+        "need_session": "⚠️ Сначала сделайте /login и сохраните session (Relayer).",
+        "start_owner": "✅ Вы — главный админ.\nКоманды: /admin_add /admin_del /admin_list /login /gift\nInline: @Bot 50 @user comment",
+        "start_admin": "✅ Вы — админ.\nКоманды: /login /gift\nInline: @Bot 50 @user comment",
+        "admin_added": "✅ Вы добавлены как админ. Нажмите /login чтобы привязать relayer session.",
+        "admin_removed": "⛔ Ваш доступ удалён админом.",
+        "login_phone": "📱 Отправьте номер телефона (пример: +998901234567).",
+        "login_code": "🔐 Отправьте код.\nМожно с точками: 1.2.3.4.5 (бот сам уберёт точки).",
+        "login_pass": "🔒 Включена 2FA (Cloud Password). Отправьте пароль.",
+        "login_ok": "✅ Session сохранена! Теперь можно отправлять подарки.",
+        "login_cancel": "❌ Login отменён.",
+        "lang_set": "✅ Язык установлен: {lang}",
+        "inline_help": "Наберите: @Bot 50 @username комментарий",
+        "pick_title": "🎁 Выберите подарок:",
+        "confirm_title": "Подтвердите отправку:",
+        "sent_ok": "✅ Отправлено!",
+        "already_done": "⚠️ Уже обработано (отправлено/отменено).",
+        "cancelled": "❌ Отменено.",
+        "need_reply_target": "⚠️ Target=reply, но reply не найден.\nНапишите target в inline запросе или используйте /gift reply в группе.",
+        "entity_fail": "❌ Не могу найти пользователя.\n✅ Лучше использовать @username или пусть получатель напишет relayer-аккаунту 1 раз.",
+        "mode_anon": "🕵️ Анонимно (hide name)",
+        "mode_show": "👤 Профиль (show name)",
+        "comment_empty": "(без комментария)",
+        "btn_send": "✅ Отправить",
+        "btn_toggle": "🕵️/👤 Режим",
+        "btn_cancel": "❌ Отмена",
+        "btn_menu": "⬅️ Меню",
+        "menu": "Меню:",
+        "set_target": "🎯 Отправьте target: @username или user_id или me",
+        "set_comment": "💬 Отправьте комментарий (или '-' чтобы удалить).",
+        "saved": "✅ Сохранено.",
+        "bad_args": "Формат: /gift 50 [@user|id] [comment...] (в группе можно reply + /gift 50 ...)",
+        "admin_list_title": "👮 Admin list:",
+        "admin_add_ok": "✅ Admin qo‘shildi: {uid}",
+        "admin_del_ok": "✅ Admin o‘chirildi: {uid}",
+    },
+    "uz": {
+        "denied": "⛔ Ruxsat yo‘q. Siz admin emassiz.",
+        "need_session": "⚠️ Avval /login qilib relayer session bog‘lang.",
+        "start_owner": "✅ Siz bosh adminsiz.\nBuyruqlar: /admin_add /admin_del /admin_list /login /gift\nInline: @Bot 50 @user comment",
+        "start_admin": "✅ Siz adminsiz.\nBuyruqlar: /login /gift\nInline: @Bot 50 @user comment",
+        "admin_added": "✅ Siz admin bo‘ldingiz. /login qilib relayer session bog‘lang.",
+        "admin_removed": "⛔ Sizning ruxsatingiz o‘chirildi.",
+        "login_phone": "📱 Telefon raqamingizni yuboring (misol: +998901234567).",
+        "login_code": "🔐 Kod yuboring.\nNuqta bilan ham bo‘ladi: 1.2.3.4.5 (bot nuqtani olib tashlaydi).",
+        "login_pass": "🔒 2FA bor (Cloud Password). Parolni yuboring.",
+        "login_ok": "✅ Session saqlandi! Endi gift yuborishingiz mumkin.",
+        "login_cancel": "❌ Login bekor qilindi.",
+        "lang_set": "✅ Til o‘rnatildi: {lang}",
+        "inline_help": "Yozing: @Bot 50 @username komment",
+        "pick_title": "🎁 Sovg‘ani tanlang:",
+        "confirm_title": "Yuborishni tasdiqlang:",
+        "sent_ok": "✅ Yuborildi!",
+        "already_done": "⚠️ Avval ishlangan (yuborilgan/bekor qilingan).",
+        "cancelled": "❌ Bekor qilindi.",
+        "need_reply_target": "⚠️ Target=reply, lekin reply topilmadi.\nInline’da target yozing yoki guruhda reply + /gift ishlating.",
+        "entity_fail": "❌ User topilmadi.\n✅ @username ishlating yoki user relayerga 1 marta yozsin.",
+        "mode_anon": "🕵️ Anonim (hide name)",
+        "mode_show": "👤 Profil (show name)",
+        "comment_empty": "(komment yo‘q)",
+        "btn_send": "✅ Yuborish",
+        "btn_toggle": "🕵️/👤 Rejim",
+        "btn_cancel": "❌ Bekor",
+        "btn_menu": "⬅️ Menu",
+        "menu": "Menu:",
+        "set_target": "🎯 Target yuboring: @username yoki user_id yoki me",
+        "set_comment": "💬 Komment yuboring (o‘chirish: '-')",
+        "saved": "✅ Saqlandi.",
+        "bad_args": "Format: /gift 50 [@user|id] [comment...] (guruhda reply + /gift 50 ...)",
+        "admin_list_title": "👮 Adminlar:",
+        "admin_add_ok": "✅ Admin qo‘shildi: {uid}",
+        "admin_del_ok": "✅ Admin o‘chirildi: {uid}",
+    },
+    "en": {
+        "denied": "⛔ Access denied. You are not an admin.",
+        "need_session": "⚠️ Run /login first to attach relayer session.",
+        "start_owner": "✅ You are OWNER.\nCommands: /admin_add /admin_del /admin_list /login /gift\nInline: @Bot 50 @user comment",
+        "start_admin": "✅ You are admin.\nCommands: /login /gift\nInline: @Bot 50 @user comment",
+        "admin_added": "✅ You are now an admin. Use /login to attach relayer session.",
+        "admin_removed": "⛔ Your access was removed.",
+        "login_phone": "📱 Send your phone number (example: +998901234567).",
+        "login_code": "🔐 Send the code.\nDots allowed: 1.2.3.4.5 (bot removes dots).",
+        "login_pass": "🔒 2FA enabled (Cloud Password). Send your password.",
+        "login_ok": "✅ Session saved! You can send gifts now.",
+        "login_cancel": "❌ Login cancelled.",
+        "lang_set": "✅ Language set: {lang}",
+        "inline_help": "Type: @Bot 50 @username comment",
+        "pick_title": "🎁 Pick a gift:",
+        "confirm_title": "Confirm sending:",
+        "sent_ok": "✅ Sent!",
+        "already_done": "⚠️ Already processed.",
+        "cancelled": "❌ Cancelled.",
+        "need_reply_target": "⚠️ Target=reply but reply not found.\nProvide target in inline query or use /gift reply in group.",
+        "entity_fail": "❌ Can't resolve user.\n✅ Use @username or ask target to message relayer once.",
+        "mode_anon": "🕵️ Anonymous (hide name)",
+        "mode_show": "👤 Show profile (show name)",
+        "comment_empty": "(no comment)",
+        "btn_send": "✅ Send",
+        "btn_toggle": "🕵️/👤 Mode",
+        "btn_cancel": "❌ Cancel",
+        "btn_menu": "⬅️ Menu",
+        "menu": "Menu:",
+        "set_target": "🎯 Send target: @username or user_id or me",
+        "set_comment": "💬 Send comment (or '-' to remove).",
+        "saved": "✅ Saved.",
+        "bad_args": "Usage: /gift 50 [@user|id] [comment...] (in groups: reply + /gift 50 ...)",
+        "admin_list_title": "👮 Admin list:",
+        "admin_add_ok": "✅ Added admin: {uid}",
+        "admin_del_ok": "✅ Removed admin: {uid}",
+    },
+}
+
+
+def tr(lang: str, key: str) -> str:
+    if lang not in T:
+        lang = "ru"
+    return T[lang].get(key, T["ru"].get(key, key))
+
+
+def fmt_mode(lang: str, hide_name: int) -> str:
+    return tr(lang, "mode_anon") if hide_name == 1 else tr(lang, "mode_show")
+
+
+# =========================
+# Gifts (NO ID in UI)
 # =========================
 @dataclass(frozen=True)
 class GiftItem:
@@ -85,162 +212,28 @@ class GiftItem:
 
 
 GIFT_CATALOG: List[GiftItem] = [
-    GiftItem(6028601630662853006, 50, "🍾 50★"),
-    GiftItem(5170521118301225164, 100, "💎 100★"),
-    GiftItem(5170690322832818290, 100, "💍 100★"),
-    GiftItem(5168043875654172773, 100, "🏆 100★"),
-    GiftItem(5170564780938756245, 50, "🚀 50★"),
-    GiftItem(5170314324215857265, 50, "💐 50★"),
-    GiftItem(5170144170496491616, 50, "🎂 50★"),
-    GiftItem(5168103777563050263, 25, "🌹 25★"),
-    GiftItem(5170250947678437525, 25, "🎁 25★"),
-    GiftItem(5170233102089322756, 15, "🧸 15★"),
-    GiftItem(5170145012310081615, 15, "💝 15★"),
-    GiftItem(5922558454332916696, 50, "🎄 50★"),
-    GiftItem(5956217000635139069, 50, "🧸(hat) 50★"),
+    GiftItem(6028601630662853006, 50, "🍾"),
+    GiftItem(5170521118301225164, 100, "💎"),
+    GiftItem(5170690322832818290, 100, "💍"),
+    GiftItem(5168043875654172773, 100, "🏆"),
+    GiftItem(5170564780938756245, 50, "🚀"),
+    GiftItem(5170314324215857265, 50, "💐"),
+    GiftItem(5170144170496491616, 50, "🎂"),
+    GiftItem(5168103777563050263, 25, "🌹"),
+    GiftItem(5170250947678437525, 25, "🎁"),
+    GiftItem(5170233102089322756, 15, "🧸"),
+    GiftItem(5170145012310081615, 15, "💝"),
+    GiftItem(5922558454332916696, 50, "🎄"),
+    GiftItem(5956217000635139069, 50, "🧸🎩"),
 ]
 
 GIFTS_BY_ID: Dict[int, GiftItem] = {g.id: g for g in GIFT_CATALOG}
 
 
-# =========================
-# i18n (UZ/RU/EN)
-# =========================
-T = {
-    "ru": {
-        "access_denied": "⛔ Доступ запрещён.\nЭтот бот только для админов.",
-        "start_admin": "✅ Доступ разрешён.\n\nИспользование inline:\n`@{bot} 50 @username | комментарий | anon/show`\n\nПример:\n`@{bot} 50 @Rune_13 | :) | anon`",
-        "help": (
-            "🛠 Команды:\n"
-            "/admin_add <id|@user> — добавить админа (owner)\n"
-            "/admin_remove <id|@user> — отключить админа (owner)\n"
-            "/admin_list — список админов\n"
-            "/session_set <SESSION_STRING> — сохранить вашу сессию (relayer)\n"
-            "/session_clear — убрать вашу сессию\n"
-            "/lang <ru|uz|en> — язык\n"
-            "/set_target <me|@user|id> — дефолтный получатель\n"
-            "/set_comment <text|off> — дефолтный комментарий\n"
-            "/mode <anon|show> — дефолтный режим\n"
-        ),
-        "need_session": "❌ У вас нет relayer-сессии. Используйте /session_set <SESSION_STRING> (QR-сессия).",
-        "owner_only": "❌ Только owner может это делать.",
-        "admin_added": "✅ Админ добавлен: {uid}",
-        "admin_removed": "✅ Админ отключён: {uid}",
-        "admin_list": "👮 Админы:\n{rows}",
-        "session_saved": "✅ Сессия сохранена.",
-        "session_cleared": "✅ Сессия удалена.",
-        "lang_set": "✅ Язык: {lang}",
-        "target_set": "✅ Получатель по умолчанию: {target}",
-        "comment_set": "✅ Комментарий по умолчанию сохранён.",
-        "comment_cleared": "✅ Комментарий удалён.",
-        "mode_set": "✅ Режим по умолчанию: {mode}",
-        "inline_bad": "Напишите так: `@{bot} 50 @username | comment | anon/show`",
-        "inline_need_target": "⚠️ Нет получателя. Укажите `@username` или задайте /set_target",
-        "inline_title": "{label} (⭐{stars})",
-        "inline_desc": "Кому: {target} | Режим: {mode}",
-        "msg_preview": "🎁 Подарок: {label} (⭐{stars})\n👤 Кому: {target}\n🔒 Режим: {mode}\n💬 Коммент: {comment}",
-        "btn_send": "✅ Отправить",
-        "btn_cancel": "❌ Отмена",
-        "btn_toggle": "🕵️/👤 Режим",
-        "sending": "⏳ Отправляю...",
-        "sent": "✅ Отправлено!",
-        "cancelled": "❌ Отменено.",
-        "already_done": "⚠️ Уже обработано (повторно нельзя).",
-        "fail": "❌ Ошибка: {e}",
-        "note_anon": "ℹ️ Важно: hide_name может скрывать имя в деталях подарка, но Telegram всё равно может показывать отправителя в чате.",
-    },
-    "uz": {
-        "access_denied": "⛔ Ruxsat yo‘q.\nBu bot faqat adminlar uchun.",
-        "start_admin": "✅ Ruxsat bor.\n\nInline ishlatish:\n`@{bot} 50 @username | komment | anon/show`\n\nMisol:\n`@{bot} 50 @Rune_13 | :) | anon`",
-        "help": (
-            "🛠 Buyruqlar:\n"
-            "/admin_add <id|@user> — admin qo‘shish (owner)\n"
-            "/admin_remove <id|@user> — adminni o‘chirish (owner)\n"
-            "/admin_list — adminlar ro‘yxati\n"
-            "/session_set <SESSION_STRING> — relayer sessiya saqlash\n"
-            "/session_clear — sessiyani o‘chirish\n"
-            "/lang <ru|uz|en> — til\n"
-            "/set_target <me|@user|id> — default qabul qiluvchi\n"
-            "/set_comment <text|off> — default komment\n"
-            "/mode <anon|show> — default rejim\n"
-        ),
-        "need_session": "❌ Sizda relayer sessiya yo‘q. /session_set <SESSION_STRING> qiling (QR sessiya).",
-        "owner_only": "❌ Faqat owner qila oladi.",
-        "admin_added": "✅ Admin qo‘shildi: {uid}",
-        "admin_removed": "✅ Admin o‘chirildi: {uid}",
-        "admin_list": "👮 Adminlar:\n{rows}",
-        "session_saved": "✅ Sessiya saqlandi.",
-        "session_cleared": "✅ Sessiya o‘chirildi.",
-        "lang_set": "✅ Til: {lang}",
-        "target_set": "✅ Default target: {target}",
-        "comment_set": "✅ Default komment saqlandi.",
-        "comment_cleared": "✅ Komment o‘chirildi.",
-        "mode_set": "✅ Default rejim: {mode}",
-        "inline_bad": "Shunday yozing: `@{bot} 50 @username | comment | anon/show`",
-        "inline_need_target": "⚠️ Target yo‘q. `@username` yozing yoki /set_target qo‘ying",
-        "inline_title": "{label} (⭐{stars})",
-        "inline_desc": "Kimga: {target} | Rejim: {mode}",
-        "msg_preview": "🎁 Sovg‘a: {label} (⭐{stars})\n👤 Kimga: {target}\n🔒 Rejim: {mode}\n💬 Komment: {comment}",
-        "btn_send": "✅ Yuborish",
-        "btn_cancel": "❌ Bekor",
-        "btn_toggle": "🕵️/👤 Rejim",
-        "sending": "⏳ Yuborilyapti...",
-        "sent": "✅ Yuborildi!",
-        "cancelled": "❌ Bekor qilindi.",
-        "already_done": "⚠️ Oldin ishlangan (qayta bo‘lmaydi).",
-        "fail": "❌ Xatolik: {e}",
-        "note_anon": "ℹ️ Eslatma: hide_name gift detail’da ismni yashirishi mumkin, lekin chatda Telegram baribir yuboruvchini ko‘rsatadi.",
-    },
-    "en": {
-        "access_denied": "⛔ Access denied. Admin-only bot.",
-        "start_admin": "✅ Access granted.\n\nInline usage:\n`@{bot} 50 @username | comment | anon/show`\n\nExample:\n`@{bot} 50 @Rune_13 | :) | anon`",
-        "help": (
-            "🛠 Commands:\n"
-            "/admin_add <id|@user> — add admin (owner)\n"
-            "/admin_remove <id|@user> — disable admin (owner)\n"
-            "/admin_list — list admins\n"
-            "/session_set <SESSION_STRING> — save your relayer session\n"
-            "/session_clear — remove your session\n"
-            "/lang <ru|uz|en> — language\n"
-            "/set_target <me|@user|id> — default receiver\n"
-            "/set_comment <text|off> — default comment\n"
-            "/mode <anon|show> — default mode\n"
-        ),
-        "need_session": "❌ You have no relayer session. Use /session_set <SESSION_STRING> (QR session).",
-        "owner_only": "❌ Owner-only.",
-        "admin_added": "✅ Admin added: {uid}",
-        "admin_removed": "✅ Admin disabled: {uid}",
-        "admin_list": "👮 Admins:\n{rows}",
-        "session_saved": "✅ Session saved.",
-        "session_cleared": "✅ Session cleared.",
-        "lang_set": "✅ Language: {lang}",
-        "target_set": "✅ Default target: {target}",
-        "comment_set": "✅ Default comment saved.",
-        "comment_cleared": "✅ Comment cleared.",
-        "mode_set": "✅ Default mode: {mode}",
-        "inline_bad": "Use: `@{bot} 50 @username | comment | anon/show`",
-        "inline_need_target": "⚠️ Missing target. Provide `@username` or set /set_target",
-        "inline_title": "{label} (⭐{stars})",
-        "inline_desc": "To: {target} | Mode: {mode}",
-        "msg_preview": "🎁 Gift: {label} (⭐{stars})\n👤 To: {target}\n🔒 Mode: {mode}\n💬 Comment: {comment}",
-        "btn_send": "✅ Send",
-        "btn_cancel": "❌ Cancel",
-        "btn_toggle": "🕵️/👤 Mode",
-        "sending": "⏳ Sending...",
-        "sent": "✅ Sent!",
-        "cancelled": "❌ Cancelled.",
-        "already_done": "⚠️ Already processed (no duplicate).",
-        "fail": "❌ Error: {e}",
-        "note_anon": "ℹ️ Note: hide_name may hide your name in gift details, but Telegram still show the sender in chat.",
-    },
-}
-
-
-def t(lang: str, key: str, **kwargs) -> str:
-    lang = (lang or DEFAULT_LANG).lower()
-    pack = T.get(lang, T["ru"])
-    s = pack.get(key, T["ru"].get(key, key))
-    return s.format(**kwargs)
+def gifts_up_to(max_stars: int) -> List[GiftItem]:
+    out = [g for g in GIFT_CATALOG if g.stars <= max_stars]
+    out.sort(key=lambda x: (x.stars, x.label))
+    return out
 
 
 # =========================
@@ -261,385 +254,429 @@ async def db_init():
         await db.execute("""
         CREATE TABLE IF NOT EXISTS admins (
             user_id INTEGER PRIMARY KEY,
-            role TEXT NOT NULL DEFAULT 'admin', -- owner|admin
-            is_active INTEGER NOT NULL DEFAULT 1,
-            added_by INTEGER,
-            added_at INTEGER NOT NULL
-        );
-        """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS admin_prefs (
-            user_id INTEGER PRIMARY KEY,
-            lang TEXT DEFAULT NULL,
-            default_target TEXT DEFAULT NULL,
-            default_comment TEXT DEFAULT NULL,
-            default_anonymous INTEGER NOT NULL DEFAULT 0
-        );
-        """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS admin_sessions (
-            user_id INTEGER PRIMARY KEY,
-            session_string TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
+            role TEXT NOT NULL DEFAULT 'admin', -- 'owner'|'admin'
+            lang TEXT NOT NULL DEFAULT 'ru',
+            default_hide_name INTEGER NOT NULL DEFAULT 0,
+            session_string TEXT DEFAULT NULL,
+            created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
         """)
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS inline_ctx (
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            target TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS actions (
+            action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            creator_id INTEGER NOT NULL,
+            target TEXT NOT NULL, -- '@user' | '123' | '__reply__' | 'me'
+            gift_id INTEGER NOT NULL,
+            stars INTEGER NOT NULL,
             comment TEXT DEFAULT NULL,
-            anonymous INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
+            hide_name INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft', -- draft|sending|sent|failed|cancelled
+            error TEXT DEFAULT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
         );
         """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS sent_guard (
-            message_key TEXT PRIMARY KEY,
-            created_at INTEGER NOT NULL
-        );
-        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_actions_creator ON actions(creator_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);")
         await db.commit()
 
-    # ensure owner exists
-    await db_ensure_owner()
-
-
-async def db_ensure_owner():
+    # seed owner
     now = int(time.time())
     async with db_connect() as db:
         await db.execute("""
-            INSERT OR IGNORE INTO admins(user_id, role, is_active, added_by, added_at)
-            VALUES(?, 'owner', 1, NULL, ?)
-        """, (OWNER_ID, now))
-        await db.execute("""
-            INSERT OR IGNORE INTO admin_prefs(user_id, lang, default_target, default_comment, default_anonymous)
-            VALUES(?, ?, NULL, NULL, 0)
-        """, (OWNER_ID, DEFAULT_LANG))
+        INSERT OR IGNORE INTO admins(user_id, role, lang, created_at, updated_at)
+        VALUES(?,?,?,?,?)
+        """, (OWNER_ADMIN_ID, "owner", "ru", now, now))
         await db.commit()
 
 
-async def db_is_admin(user_id: int) -> Tuple[bool, str]:
-    async with db_connect() as db:
-        cur = await db.execute("SELECT role, is_active FROM admins WHERE user_id=?", (user_id,))
-        row = await cur.fetchone()
-        if not row:
-            return False, "none"
-        role, is_active = row[0], int(row[1])
-        return (is_active == 1), (role or "admin")
-
-
-async def db_add_admin(by_user: int, user_id: int):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            INSERT OR REPLACE INTO admins(user_id, role, is_active, added_by, added_at)
-            VALUES(?, 'admin', 1, ?, ?)
-        """, (user_id, by_user, now))
-        await db.execute("""
-            INSERT OR IGNORE INTO admin_prefs(user_id, lang, default_target, default_comment, default_anonymous)
-            VALUES(?, ?, NULL, NULL, 0)
-        """, (user_id, DEFAULT_LANG))
-        await db.commit()
-
-
-async def db_remove_admin(user_id: int):
-    async with db_connect() as db:
-        await db.execute("UPDATE admins SET is_active=0 WHERE user_id=? AND role!='owner'", (user_id,))
-        await db.commit()
-
-
-async def db_list_admins() -> List[Tuple[int, str, int]]:
-    async with db_connect() as db:
-        cur = await db.execute("SELECT user_id, role, is_active FROM admins ORDER BY role DESC, user_id ASC")
-        rows = await cur.fetchall()
-        return [(int(r[0]), r[1], int(r[2])) for r in rows]
-
-
-async def db_get_prefs(user_id: int) -> Tuple[str, Optional[str], Optional[str], int]:
+async def db_get_admin(user_id: int) -> Optional[dict]:
     async with db_connect() as db:
         cur = await db.execute("""
-            SELECT lang, default_target, default_comment, default_anonymous
-            FROM admin_prefs
-            WHERE user_id=?
+        SELECT user_id, role, lang, default_hide_name, session_string
+        FROM admins WHERE user_id=?
         """, (user_id,))
-        row = await cur.fetchone()
-        if not row:
-            return DEFAULT_LANG, None, None, 0
-        return (row[0] or DEFAULT_LANG, row[1], row[2], int(row[3] or 0))
-
-
-async def db_set_lang(user_id: int, lang: str):
-    async with db_connect() as db:
-        await db.execute("UPDATE admin_prefs SET lang=? WHERE user_id=?", (lang, user_id))
-        await db.commit()
-
-
-async def db_set_target(user_id: int, target: Optional[str]):
-    async with db_connect() as db:
-        await db.execute("UPDATE admin_prefs SET default_target=? WHERE user_id=?", (target, user_id))
-        await db.commit()
-
-
-async def db_set_comment(user_id: int, comment: Optional[str]):
-    async with db_connect() as db:
-        await db.execute("UPDATE admin_prefs SET default_comment=? WHERE user_id=?", (comment, user_id))
-        await db.commit()
-
-
-async def db_set_mode(user_id: int, anonymous: int):
-    async with db_connect() as db:
-        await db.execute("UPDATE admin_prefs SET default_anonymous=? WHERE user_id=?", (anonymous, user_id))
-        await db.commit()
-
-
-async def db_set_session(user_id: int, session_string: str):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            INSERT OR REPLACE INTO admin_sessions(user_id, session_string, enabled, updated_at)
-            VALUES(?, ?, 1, ?)
-        """, (user_id, session_string.strip(), now))
-        await db.commit()
-
-
-async def db_clear_session(user_id: int):
-    async with db_connect() as db:
-        await db.execute("DELETE FROM admin_sessions WHERE user_id=?", (user_id,))
-        await db.commit()
-
-
-async def db_get_session(user_id: int) -> Optional[str]:
-    async with db_connect() as db:
-        cur = await db.execute("SELECT session_string, enabled FROM admin_sessions WHERE user_id=?", (user_id,))
-        row = await cur.fetchone()
-        if not row:
-            return None
-        if int(row[1]) != 1:
-            return None
-        return row[0]
-
-
-async def db_put_inline_ctx(token: str, user_id: int, target: str, comment: Optional[str], anonymous: int):
-    now = int(time.time())
-    async with db_connect() as db:
-        await db.execute("""
-            INSERT OR REPLACE INTO inline_ctx(token, user_id, target, comment, anonymous, created_at)
-            VALUES(?,?,?,?,?,?)
-        """, (token, user_id, target, comment, int(anonymous), now))
-        await db.commit()
-
-
-async def db_get_inline_ctx(token: str) -> Optional[dict]:
-    async with db_connect() as db:
-        cur = await db.execute("""
-            SELECT token, user_id, target, comment, anonymous, created_at
-            FROM inline_ctx WHERE token=?
-        """, (token,))
-        row = await cur.fetchone()
-        if not row:
+        r = await cur.fetchone()
+        if not r:
             return None
         return {
-            "token": row[0],
-            "user_id": int(row[1]),
-            "target": row[2],
-            "comment": row[3],
-            "anonymous": int(row[4]),
-            "created_at": int(row[5]),
+            "user_id": r[0],
+            "role": r[1],
+            "lang": r[2],
+            "default_hide_name": int(r[3] or 0),
+            "session_string": r[4],
         }
 
 
-async def db_update_inline_mode(token: str, anonymous: int):
-    async with db_connect() as db:
-        await db.execute("UPDATE inline_ctx SET anonymous=? WHERE token=?", (int(anonymous), token))
-        await db.commit()
-
-
-async def db_cleanup_inline_ctx():
-    cutoff = int(time.time()) - INLINE_CTX_TTL_SEC
-    async with db_connect() as db:
-        await db.execute("DELETE FROM inline_ctx WHERE created_at < ?", (cutoff,))
-        await db.commit()
-
-
-async def db_guard_once(message_key: str) -> bool:
+async def db_set_lang(user_id: int, lang: str):
     now = int(time.time())
-    try:
-        async with db_connect() as db:
-            await db.execute("INSERT INTO sent_guard(message_key, created_at) VALUES(?,?)", (message_key, now))
-            await db.commit()
-        return True
-    except Exception:
+    async with db_connect() as db:
+        await db.execute("""
+        UPDATE admins SET lang=?, updated_at=? WHERE user_id=?
+        """, (lang, now, user_id))
+        await db.commit()
+
+
+async def db_set_default_hide(user_id: int, hide: int):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+        UPDATE admins SET default_hide_name=?, updated_at=? WHERE user_id=?
+        """, (hide, now, user_id))
+        await db.commit()
+
+
+async def db_set_session(user_id: int, session_string: Optional[str]):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+        UPDATE admins SET session_string=?, updated_at=? WHERE user_id=?
+        """, (session_string, now, user_id))
+        await db.commit()
+
+
+async def db_add_admin(user_id: int):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+        INSERT OR IGNORE INTO admins(user_id, role, lang, created_at, updated_at)
+        VALUES(?,?,?,?,?)
+        """, (user_id, "admin", "ru", now, now))
+        await db.commit()
+
+
+async def db_del_admin(user_id: int):
+    async with db_connect() as db:
+        await db.execute("DELETE FROM admins WHERE user_id=? AND role!='owner'", (user_id,))
+        await db.commit()
+
+
+async def db_list_admins() -> List[Tuple[int, str, str]]:
+    async with db_connect() as db:
+        cur = await db.execute("SELECT user_id, role, lang FROM admins ORDER BY role DESC, user_id ASC")
+        rows = await cur.fetchall()
+        return [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+async def db_create_action(
+    creator_id: int,
+    target: str,
+    gift: GiftItem,
+    comment: Optional[str],
+    hide_name: int,
+) -> int:
+    now = int(time.time())
+    async with db_connect() as db:
+        cur = await db.execute("""
+        INSERT INTO actions(
+            creator_id, target, gift_id, stars, comment, hide_name, status, created_at, updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        """, (creator_id, target, gift.id, gift.stars, comment, hide_name, "draft", now, now))
+        await db.commit()
+        return int(cur.lastrowid)
+
+
+async def db_get_action(action_id: int) -> Optional[dict]:
+    async with db_connect() as db:
+        cur = await db.execute("""
+        SELECT action_id, creator_id, target, gift_id, stars, comment, hide_name, status, error
+        FROM actions WHERE action_id=?
+        """, (action_id,))
+        r = await cur.fetchone()
+        if not r:
+            return None
+        return {
+            "action_id": int(r[0]),
+            "creator_id": int(r[1]),
+            "target": str(r[2]),
+            "gift_id": int(r[3]),
+            "stars": int(r[4]),
+            "comment": r[5],
+            "hide_name": int(r[6] or 0),
+            "status": str(r[7]),
+            "error": r[8],
+        }
+
+
+async def db_toggle_action_hide(action_id: int) -> Optional[int]:
+    now = int(time.time())
+    async with db_connect() as db:
+        cur = await db.execute("SELECT hide_name, status FROM actions WHERE action_id=?", (action_id,))
+        r = await cur.fetchone()
+        if not r:
+            return None
+        hide = int(r[0] or 0)
+        status = str(r[1])
+        if status != "draft":
+            return None
+        new_val = 0 if hide == 1 else 1
+        await db.execute("""
+        UPDATE actions SET hide_name=?, updated_at=? WHERE action_id=? AND status='draft'
+        """, (new_val, now, action_id))
+        await db.commit()
+        return new_val
+
+
+async def db_cancel_action(action_id: int) -> bool:
+    now = int(time.time())
+    async with db_connect() as db:
+        cur = await db.execute("""
+        UPDATE actions SET status='cancelled', updated_at=? WHERE action_id=? AND status='draft'
+        """, (now, action_id))
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def db_try_lock_send(action_id: int) -> bool:
+    now = int(time.time())
+    async with db_connect() as db:
+        cur = await db.execute("""
+        UPDATE actions SET status='sending', updated_at=? WHERE action_id=? AND status='draft'
+        """, (now, action_id))
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def db_mark_sent(action_id: int):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+        UPDATE actions SET status='sent', error=NULL, updated_at=? WHERE action_id=?
+        """, (now, action_id))
+        await db.commit()
+
+
+async def db_mark_failed(action_id: int, err: str):
+    now = int(time.time())
+    async with db_connect() as db:
+        await db.execute("""
+        UPDATE actions SET status='failed', error=?, updated_at=? WHERE action_id=?
+        """, (err[:500], now, action_id))
+        await db.commit()
+
+
+async def db_cleanup_drafts():
+    cutoff = int(time.time()) - DRAFT_TTL_SECONDS
+    async with db_connect() as db:
+        await db.execute("""
+        DELETE FROM actions WHERE status='draft' AND created_at < ?
+        """, (cutoff,))
+        await db.commit()
+
+
+# =========================
+# Auth helpers
+# =========================
+async def ensure_admin_or_denied(m: Message) -> bool:
+    adm = await db_get_admin(m.from_user.id)
+    if not adm:
+        await m.reply(T["ru"]["denied"])
         return False
+    return True
 
 
-# =========================
-# Helpers
-# =========================
-def normalize_target(raw: Optional[str]) -> Optional[str]:
-    if not raw:
+async def ensure_admin_callback_or_denied(c: CallbackQuery) -> Optional[dict]:
+    adm = await db_get_admin(c.from_user.id)
+    if not adm:
+        try:
+            await c.answer(T["ru"]["denied"], show_alert=True)
+        except Exception:
+            pass
         return None
-    s = raw.strip()
-    if not s:
+    return adm
+
+
+def sanitize_phone(text: str) -> str:
+    t = (text or "").strip()
+    t = t.replace(" ", "")
+    if not t.startswith("+"):
+        # allow "998..." -> "+998..."
+        if t.isdigit():
+            t = "+" + t
+    return t
+
+
+def sanitize_code(text: str) -> str:
+    # allow "1.2.3.4.5" -> "12345"
+    digits = re.sub(r"\D+", "", text or "")
+    return digits
+
+
+def safe_comment(text: Optional[str]) -> Optional[str]:
+    if not text:
         return None
-    if s.lower() == "me":
+    t = text.strip().replace("\r", " ").replace("\n", " ")
+    if not t:
+        return None
+    if len(t) > 250:
+        t = t[:250]
+    return t
+
+
+def normalize_target(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
         return "me"
-    if s.startswith("@"):
-        return s
-    if s.isdigit():
-        return s
-    return "@" + s
-
-
-def clean_comment(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    s = raw.strip().replace("\r", " ").replace("\n", " ")
-    if not s:
-        return None
-    if len(s) > 120:
-        s = s[:120]
-    return s
-
-
-def mode_text(lang: str, anonymous: int) -> str:
-    if (anonymous or 0) == 1:
-        return "anon" if lang == "en" else ("anon" if lang == "ru" else "anon")
-    return "show" if lang == "en" else ("show" if lang == "ru" else "show")
-
-
-def parse_inline_query(q: str, prefs_target: Optional[str], prefs_comment: Optional[str], prefs_anon: int):
-    """
-    Format:
-      "<max_stars> [target] | comment | anon/show"
-    Examples:
-      "50"
-      "50 @user"
-      "50 @user | :)"
-      "50 @user | hello | anon"
-      "50 | hi | show"   (uses default target)
-    """
-    q = (q or "").strip()
-    if not q:
-        return None
-
-    parts = [p.strip() for p in q.split("|")]
-    head = parts[0]
-    head_tokens = head.split()
-    if not head_tokens or not head_tokens[0].isdigit():
-        return None
-
-    max_stars = int(head_tokens[0])
-    target = None
-    if len(head_tokens) >= 2:
-        target = normalize_target(head_tokens[1])
-
-    comment = None
-    if len(parts) >= 2:
-        comment = clean_comment(parts[1])
-    if comment is None:
-        comment = clean_comment(prefs_comment)
-
-    mode = None
-    if len(parts) >= 3:
-        mode = parts[2].strip().lower()
-
-    anonymous = prefs_anon
-    if mode in ("anon", "anonymous", "hide"):
-        anonymous = 1
-    elif mode in ("show", "profile", "name"):
-        anonymous = 0
-
-    if target is None:
-        target = normalize_target(prefs_target)
-
-    return max_stars, target, comment, anonymous
-
-
-def make_inline_token(user_id: int) -> str:
-    # short token
-    rnd = uuid.uuid4().hex[:10]
-    return f"{user_id:x}{rnd}"
+    if t.lower() == "me":
+        return "me"
+    if t.startswith("@"):
+        return t
+    if t.isdigit():
+        return t
+    return "@" + t
 
 
 # =========================
-# Telethon relayer pool
+# UI
+# =========================
+def menu_kb(lang: str, hide_default: int, has_session: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎁 /gift", callback_data="menu:help_gift")
+    kb.button(text="🌐 Lang", callback_data="menu:lang")
+    kb.button(text=("🕵️ default" if hide_default == 1 else "👤 default"), callback_data="menu:toggle_default")
+    if not has_session:
+        kb.button(text="🔐 /login", callback_data="menu:help_login")
+    kb.adjust(2, 2)
+    return kb.as_markup()
+
+
+def lang_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🇷🇺 RU", callback_data="lang:ru")
+    kb.button(text="🇺🇿 UZ", callback_data="lang:uz")
+    kb.button(text="🇬🇧 EN", callback_data="lang:en")
+    kb.button(text="⬅️", callback_data="menu:home")
+    kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+def action_kb(lang: str, action_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=tr(lang, "btn_send"), callback_data=f"a:{action_id}:send")
+    kb.button(text=tr(lang, "btn_toggle"), callback_data=f"a:{action_id}:toggle")
+    kb.button(text=tr(lang, "btn_cancel"), callback_data=f"a:{action_id}:cancel")
+    kb.adjust(2, 1)
+    return kb.as_markup()
+
+
+def pick_kb(lang: str, action_ids: List[int], gifts: List[GiftItem]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for aid, g in zip(action_ids, gifts):
+        kb.button(text=f"{g.label} {g.stars}⭐", callback_data=f"a:{aid}:pick")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def safe_edit_message(
+    bot: Bot,
+    c: CallbackQuery,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+):
+    """
+    Fix: message is not modified
+    Works for normal messages; for inline_message_id edits (no message), it edits inline message.
+    """
+    try:
+        if c.message:
+            # normal
+            await c.message.edit_text(text, reply_markup=reply_markup)
+        else:
+            # inline callback
+            await bot.edit_message_text(
+                inline_message_id=c.inline_message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+    except Exception as e:
+        msg = str(e)
+        if "message is not modified" in msg:
+            # ignore
+            return
+        raise
+
+
+# =========================
+# Telethon relayer manager
 # =========================
 class RelayerPool:
+    """
+    One Telethon client per admin (cached).
+    """
     def __init__(self):
-        self._clients: Dict[str, TelegramClient] = {}
-        self._locks: Dict[str, asyncio.Lock] = {}
-        self._start_lock = asyncio.Lock()
+        self._clients: Dict[int, TelegramClient] = {}
+        self._locks: Dict[int, asyncio.Lock] = {}
 
-    @staticmethod
-    def _key(session_string: str) -> str:
-        h = hashlib.sha256(session_string.encode("utf-8")).hexdigest()
-        return h[:16]
+    def _lock(self, admin_id: int) -> asyncio.Lock:
+        if admin_id not in self._locks:
+            self._locks[admin_id] = asyncio.Lock()
+        return self._locks[admin_id]
 
-    async def _get_client(self, session_string: str) -> TelegramClient:
-        k = self._key(session_string)
-        if k in self._clients:
-            return self._clients[k]
+    async def get_client(self, admin_id: int, session_string: str) -> TelegramClient:
+        if admin_id in self._clients:
+            return self._clients[admin_id]
+        client = TelegramClient(
+            StringSession(session_string),
+            TG_API_ID,
+            TG_API_HASH,
+            timeout=TELETHON_TIMEOUT,
+            connection_retries=5,
+            retry_delay=2,
+            auto_reconnect=True,
+        )
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            raise RuntimeError("Session invalid. /login qayta qiling.")
+        self._clients[admin_id] = client
+        return client
 
-        async with self._start_lock:
-            if k in self._clients:
-                return self._clients[k]
-
-            client = TelegramClient(
-                StringSession(session_string),
-                TG_API_ID,
-                TG_API_HASH,
-                timeout=25,
-                connection_retries=5,
-                retry_delay=2,
-                auto_reconnect=True,
-            )
-            await client.connect()
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                raise RuntimeError("Session invalid / expired. Re-generate SESSION_STRING.")
-            self._clients[k] = client
-            self._locks[k] = asyncio.Lock()
-            return client
+    async def close_all(self):
+        for c in list(self._clients.values()):
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+        self._clients.clear()
 
     async def send_star_gift(
         self,
         *,
+        admin_id: int,
         session_string: str,
         target: Union[str, int],
         gift: GiftItem,
         comment: Optional[str],
         hide_name: bool,
     ) -> bool:
-        client = await self._get_client(session_string)
-        k = self._key(session_string)
-        lock = self._locks[k]
-
+        """
+        returns True if comment used, False if fallback without comment.
+        """
+        lock = self._lock(admin_id)
         async with lock:
+            client = await self.get_client(admin_id, session_string)
+
+            # can send?
             can = await client(functions.payments.CheckCanSendGiftRequest(gift_id=gift.id))
             if isinstance(can, types.payments.CheckCanSendGiftResultFail):
                 reason = getattr(can.reason, "text", None) or str(can.reason)
                 raise RuntimeError(f"Can't send gift: {reason}")
 
+            # resolve entity
             try:
                 peer = await client.get_input_entity(target)
             except Exception:
-                if isinstance(target, int):
-                    raise RuntimeError(
-                        "user_id orqali entity topilmadi. Eng yaxshisi @username ishlating "
-                        "(yoki qabul qiluvchi relayerga 1 marta yozsin)."
-                    )
-                raise
+                raise RuntimeError("ENTITY_NOT_FOUND")
 
-            cleaned = clean_comment(comment)
+            cleaned = safe_comment(comment)
             msg_obj = None
             if cleaned:
-                msg_obj = types.TextWithEntities(text=cleaned, entities=[])
+                msg_obj = types.TextWithEntities(text=cleaned[:120], entities=[])
 
             extra = {}
             if hide_name:
-                extra["hide_name"] = True
+                extra["hide_name"] = True  # only pass if True
 
             async def _try_send(message_obj):
                 invoice = types.InputInvoiceStarGift(
@@ -664,478 +701,707 @@ class RelayerPool:
                     return False
                 raise
 
-    async def stop_all(self):
-        for c in list(self._clients.values()):
-            try:
-                await c.disconnect()
-            except Exception:
-                pass
-        self._clients.clear()
-        self._locks.clear()
+
+# =========================
+# Login FSM (phone->code->pass)
+# =========================
+class LoginForm(StatesGroup):
+    phone = State()
+    code = State()
+    password = State()
+
+
+@dataclass
+class LoginFlow:
+    client: TelegramClient
+    phone: str
+    phone_code_hash: str
+
+
+_login_flows: Dict[int, LoginFlow] = {}  # user_id -> flow
+
+
+async def login_flow_cleanup(user_id: int):
+    flow = _login_flows.pop(user_id, None)
+    if flow:
+        try:
+            await flow.client.disconnect()
+        except Exception:
+            pass
 
 
 # =========================
-# Bot + UI
+# Bot setup
 # =========================
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-pool = RelayerPool()
-
-
-def inline_kb(lang: str, token: str, gift_id: int, anonymous: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text=t(lang, "btn_send"), callback_data=f"act:send:{token}:{gift_id}")
-    kb.button(text=t(lang, "btn_toggle"), callback_data=f"act:toggle:{token}:{gift_id}")
-    kb.button(text=t(lang, "btn_cancel"), callback_data=f"act:cancel:{token}:{gift_id}")
-    kb.adjust(1, 2)
-    return kb.as_markup()
-
-
-async def safe_edit_inline(callback: CallbackQuery, text: str, reply_markup: Optional[InlineKeyboardMarkup]):
-    try:
-        if callback.inline_message_id:
-            await bot.edit_message_text(
-                inline_message_id=callback.inline_message_id,
-                text=text,
-                reply_markup=reply_markup,
-            )
-        else:
-            await callback.message.edit_text(text, reply_markup=reply_markup)
-    except TelegramBadRequest as e:
-        # Fix: "message is not modified"
-        if "message is not modified" in str(e).lower():
-            return
-        raise
-
-
-async def require_admin(user_id: int) -> Tuple[bool, str, str]:
-    ok, role = await db_is_admin(user_id)
-    lang, _, _, _ = await db_get_prefs(user_id)
-    return ok, role, lang
-
-
-def resolve_target_for_send(target: str, from_user: Message) -> Union[str, int]:
-    # target is stored as "me" or "@x" or digits
-    if target == "me":
-        if from_user.from_user.username:
-            return "@" + from_user.from_user.username
-        return int(from_user.from_user.id)
-    if target.startswith("@"):
-        return target
-    if target.isdigit():
-        return int(target)
-    return target
+relayers = RelayerPool()
 
 
 # =========================
-# Commands (admin-only)
+# Owner admin tools
 # =========================
-@dp.message(Command("start"))
-async def cmd_start(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-
-    await db_cleanup_inline_ctx()
-    await m.answer(t(lang, "start_admin", bot=(await bot.get_me()).username))
-
-
-@dp.message(Command("help"))
-async def cmd_help(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    await m.answer(t(lang, "help"))
-
-
-@dp.message(Command("lang"))
-async def cmd_lang(m: Message):
-    ok, _, _ = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    parts = (m.text or "").split()
-    if len(parts) < 2:
-        lang, _, _, _ = await db_get_prefs(m.from_user.id)
-        return await m.answer(f"lang={lang} (ru|uz|en)")
-    new_lang = parts[1].lower().strip()
-    if new_lang not in ("ru", "uz", "en"):
-        return await m.answer("ru|uz|en")
-    await db_set_lang(m.from_user.id, new_lang)
-    await m.answer(t(new_lang, "lang_set", lang=new_lang))
-
-
-@dp.message(Command("set_target"))
-async def cmd_set_target(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return await m.answer("Usage: /set_target me | @username | user_id")
-    target = normalize_target(parts[1])
-    await db_set_target(m.from_user.id, target)
-    await m.answer(t(lang, "target_set", target=target))
-
-
-@dp.message(Command("set_comment"))
-async def cmd_set_comment(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return await m.answer("Usage: /set_comment off | текст")
-    raw = parts[1].strip()
-    if raw.lower() in ("off", "none", "-"):
-        await db_set_comment(m.from_user.id, None)
-        return await m.answer(t(lang, "comment_cleared"))
-    await db_set_comment(m.from_user.id, clean_comment(raw))
-    await m.answer(t(lang, "comment_set"))
-
-
-@dp.message(Command("mode"))
-async def cmd_mode(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    parts = (m.text or "").split()
-    if len(parts) < 2:
-        _, _, _, anon = await db_get_prefs(m.from_user.id)
-        return await m.answer(f"mode={'anon' if anon==1 else 'show'} (anon|show)")
-    v = parts[1].lower().strip()
-    if v not in ("anon", "show"):
-        return await m.answer("anon|show")
-    await db_set_mode(m.from_user.id, 1 if v == "anon" else 0)
-    await m.answer(t(lang, "mode_set", mode=v))
-
-
-@dp.message(Command("session_set"))
-async def cmd_session_set(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return await m.answer("Usage: /session_set <SESSION_STRING>")
-    session_string = parts[1].strip()
-
-    # Quick sanity check: try connect
-    try:
-        # will raise if invalid
-        await pool._get_client(session_string)
-    except Exception as e:
-        return await m.answer(t(lang, "fail", e=str(e)))
-
-    await db_set_session(m.from_user.id, session_string)
-    await m.answer(t(lang, "session_saved"))
-
-
-@dp.message(Command("session_clear"))
-async def cmd_session_clear(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    await db_clear_session(m.from_user.id)
-    await m.answer(t(lang, "session_cleared"))
+def is_owner(adm: dict) -> bool:
+    return adm.get("role") == "owner"
 
 
 @dp.message(Command("admin_add"))
 async def cmd_admin_add(m: Message):
-    ok, role, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    if role != "owner":
-        return await m.answer(t(lang, "owner_only"))
+    adm = await db_get_admin(m.from_user.id)
+    if not adm or not is_owner(adm):
+        return await m.reply(T["ru"]["denied"])
 
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return await m.answer("Usage: /admin_add <user_id>")
-    raw = parts[1].strip()
-    if raw.startswith("@"):
-        # bots can't reliably resolve user_id by username unless user interacted.
-        return await m.answer("❌ @username bo‘yicha qo‘shish uchun user_id kerak. Masalan: /admin_add 123456789")
-    if not raw.isdigit():
-        return await m.answer("user_id (digits) required")
-    uid = int(raw)
+    # /admin_add 123  or reply
+    uid = None
+    parts = (m.text or "").split()
+    if len(parts) >= 2 and parts[1].isdigit():
+        uid = int(parts[1])
+    elif m.reply_to_message and m.reply_to_message.from_user:
+        uid = m.reply_to_message.from_user.id
 
-    await db_add_admin(m.from_user.id, uid)
-    await m.answer(t(lang, "admin_added", uid=uid))
+    if not uid:
+        return await m.reply("Usage: /admin_add <user_id>  (yoki reply bilan)")
+
+    await db_add_admin(uid)
+    lang = adm["lang"]
+    await m.reply(tr(lang, "admin_add_ok").format(uid=uid))
+
+    # notify new admin (if possible)
+    try:
+        await bot.send_message(uid, tr("ru", "admin_added"))
+    except Exception:
+        pass
 
 
-@dp.message(Command("admin_remove"))
-async def cmd_admin_remove(m: Message):
-    ok, role, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
-    if role != "owner":
-        return await m.answer(t(lang, "owner_only"))
+@dp.message(Command("admin_del"))
+async def cmd_admin_del(m: Message):
+    adm = await db_get_admin(m.from_user.id)
+    if not adm or not is_owner(adm):
+        return await m.reply(T["ru"]["denied"])
 
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return await m.answer("Usage: /admin_remove <user_id>")
-    raw = parts[1].strip()
-    if not raw.isdigit():
-        return await m.answer("user_id (digits) required")
-    uid = int(raw)
+    uid = None
+    parts = (m.text or "").split()
+    if len(parts) >= 2 and parts[1].isdigit():
+        uid = int(parts[1])
+    elif m.reply_to_message and m.reply_to_message.from_user:
+        uid = m.reply_to_message.from_user.id
 
-    await db_remove_admin(uid)
-    await m.answer(t(lang, "admin_removed", uid=uid))
+    if not uid:
+        return await m.reply("Usage: /admin_del <user_id>  (yoki reply bilan)")
+
+    await db_del_admin(uid)
+    lang = adm["lang"]
+    await m.reply(tr(lang, "admin_del_ok").format(uid=uid))
+
+    try:
+        await bot.send_message(uid, tr("ru", "admin_removed"))
+    except Exception:
+        pass
 
 
 @dp.message(Command("admin_list"))
 async def cmd_admin_list(m: Message):
-    ok, _, lang = await require_admin(m.from_user.id)
-    if not ok:
-        return await m.answer(t(DEFAULT_LANG, "access_denied"))
+    adm = await db_get_admin(m.from_user.id)
+    if not adm or not is_owner(adm):
+        return await m.reply(T["ru"]["denied"])
+    lang = adm["lang"]
+
     rows = await db_list_admins()
-    lines = []
-    for uid, role, active in rows:
-        lines.append(f"- {uid} | {role} | {'ON' if active==1 else 'OFF'}")
-    await m.answer(t(lang, "admin_list", rows="\n".join(lines)))
+    text = tr(lang, "admin_list_title") + "\n\n"
+    for uid, role, lg in rows:
+        text += f"- {uid} | {role} | {lg}\n"
+    await m.reply(text)
+
+
+# =========================
+# Basic /start /lang /menu
+# =========================
+@dp.message(Command("start"))
+async def cmd_start(m: Message, state: FSMContext):
+    await state.clear()
+    adm = await db_get_admin(m.from_user.id)
+    if not adm:
+        return await m.reply(T["ru"]["denied"])
+
+    lang = adm["lang"]
+    has_session = bool(adm.get("session_string"))
+    if is_owner(adm):
+        text = tr(lang, "start_owner")
+    else:
+        text = tr(lang, "start_admin")
+
+    text += "\n\n" + tr(lang, "inline_help")
+    await m.reply(text, reply_markup=menu_kb(lang, adm["default_hide_name"], has_session))
+
+
+@dp.message(Command("lang"))
+async def cmd_lang(m: Message):
+    if not await ensure_admin_or_denied(m):
+        return
+    adm = await db_get_admin(m.from_user.id)
+    await m.reply("Choose language:", reply_markup=lang_kb())
+
+
+@dp.callback_query(F.data.startswith("lang:"))
+async def cb_lang(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    code = c.data.split(":", 1)[1]
+    if code not in ("ru", "uz", "en"):
+        code = "ru"
+    await db_set_lang(c.from_user.id, code)
+    await c.answer("OK")
+    new_adm = await db_get_admin(c.from_user.id)
+    lang = new_adm["lang"]
+    has_session = bool(new_adm.get("session_string"))
+    await safe_edit_message(
+        bot,
+        c,
+        tr(lang, "lang_set").format(lang=code),
+        reply_markup=menu_kb(lang, new_adm["default_hide_name"], has_session)
+    )
+
+
+@dp.callback_query(F.data == "menu:home")
+async def cb_menu_home(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    has_session = bool(adm.get("session_string"))
+    lang = adm["lang"]
+    text = tr(lang, "menu")
+    await c.answer()
+    await safe_edit_message(bot, c, text, reply_markup=menu_kb(lang, adm["default_hide_name"], has_session))
+
+
+@dp.callback_query(F.data == "menu:lang")
+async def cb_menu_lang(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    await c.answer()
+    await safe_edit_message(bot, c, "Choose language:", reply_markup=lang_kb())
+
+
+@dp.callback_query(F.data == "menu:help_gift")
+async def cb_help_gift(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    lang = adm["lang"]
+    await c.answer()
+    txt = (
+        "🧩 /gift examples:\n"
+        "1) Private: /gift 50 @username Congrats\n"
+        "2) Group: reply to user, then: /gift 50 Congrats\n\n"
+        + tr(lang, "inline_help")
+    )
+    await safe_edit_message(bot, c, txt, reply_markup=menu_kb(lang, adm["default_hide_name"], bool(adm.get("session_string"))))
+
+
+@dp.callback_query(F.data == "menu:help_login")
+async def cb_help_login(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    lang = adm["lang"]
+    await c.answer()
+    await safe_edit_message(bot, c, "Use /login to attach relayer session.", reply_markup=menu_kb(lang, adm["default_hide_name"], bool(adm.get("session_string"))))
+
+
+@dp.callback_query(F.data == "menu:toggle_default")
+async def cb_toggle_default(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    lang = adm["lang"]
+    new_val = 0 if adm["default_hide_name"] == 1 else 1
+    await db_set_default_hide(c.from_user.id, new_val)
+    new_adm = await db_get_admin(c.from_user.id)
+    await c.answer("OK")
+    await safe_edit_message(
+        bot,
+        c,
+        f"Default mode: {fmt_mode(lang, new_adm['default_hide_name'])}",
+        reply_markup=menu_kb(lang, new_adm["default_hide_name"], bool(new_adm.get("session_string")))
+    )
+
+
+# =========================
+# /login flow
+# =========================
+@dp.message(Command("login"))
+async def cmd_login(m: Message, state: FSMContext):
+    if not await ensure_admin_or_denied(m):
+        return
+    adm = await db_get_admin(m.from_user.id)
+    lang = adm["lang"]
+
+    # cancel old flow if any
+    await login_flow_cleanup(m.from_user.id)
+
+    await state.set_state(LoginForm.phone)
+    await m.reply(tr(lang, "login_phone"))
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(m: Message, state: FSMContext):
+    if not await ensure_admin_or_denied(m):
+        return
+    await state.clear()
+    await login_flow_cleanup(m.from_user.id)
+    adm = await db_get_admin(m.from_user.id)
+    await m.reply(tr(adm["lang"], "login_cancel"))
+
+
+@dp.message(LoginForm.phone)
+async def login_phone(m: Message, state: FSMContext):
+    adm = await db_get_admin(m.from_user.id)
+    lang = adm["lang"]
+
+    phone = sanitize_phone(m.text or "")
+    if not phone or len(phone) < 8:
+        return await m.reply(tr(lang, "login_phone"))
+
+    client = TelegramClient(StringSession(), TG_API_ID, TG_API_HASH, timeout=TELETHON_TIMEOUT)
+    await client.connect()
+
+    try:
+        sent = await client.send_code_request(phone)
+        _login_flows[m.from_user.id] = LoginFlow(client=client, phone=phone, phone_code_hash=sent.phone_code_hash)
+        await state.set_state(LoginForm.code)
+        await m.reply(tr(lang, "login_code"))
+    except Exception as e:
+        await client.disconnect()
+        await m.reply(f"❌ send_code error: {e}")
+
+
+@dp.message(LoginForm.code)
+async def login_code(m: Message, state: FSMContext):
+    adm = await db_get_admin(m.from_user.id)
+    lang = adm["lang"]
+
+    flow = _login_flows.get(m.from_user.id)
+    if not flow:
+        await state.clear()
+        return await m.reply("Flow missing. /login qayta.")
+
+    code = sanitize_code(m.text or "")
+    if len(code) < 3:
+        return await m.reply(tr(lang, "login_code"))
+
+    try:
+        await flow.client.sign_in(flow.phone, code=code, phone_code_hash=flow.phone_code_hash)
+        # success
+        session_str = flow.client.session.save()
+        await db_set_session(m.from_user.id, session_str)
+        await state.clear()
+        await login_flow_cleanup(m.from_user.id)
+        await m.reply(tr(lang, "login_ok"))
+    except SessionPasswordNeededError:
+        await state.set_state(LoginForm.password)
+        await m.reply(tr(lang, "login_pass"))
+    except Exception as e:
+        await m.reply(f"❌ code error: {e}")
+
+
+@dp.message(LoginForm.password)
+async def login_password(m: Message, state: FSMContext):
+    adm = await db_get_admin(m.from_user.id)
+    lang = adm["lang"]
+
+    flow = _login_flows.get(m.from_user.id)
+    if not flow:
+        await state.clear()
+        return await m.reply("Flow missing. /login qayta.")
+
+    pwd = (m.text or "").strip()
+    if len(pwd) < 2:
+        return await m.reply(tr(lang, "login_pass"))
+
+    try:
+        await flow.client.sign_in(password=pwd)
+        session_str = flow.client.session.save()
+        await db_set_session(m.from_user.id, session_str)
+        await state.clear()
+        await login_flow_cleanup(m.from_user.id)
+        await m.reply(tr(lang, "login_ok"))
+    except Exception as e:
+        await m.reply(f"❌ password error: {e}")
+
+
+@dp.message(Command("logout"))
+async def cmd_logout(m: Message):
+    if not await ensure_admin_or_denied(m):
+        return
+    await db_set_session(m.from_user.id, None)
+    await m.reply("✅ Session removed. /login again if needed.")
+
+
+# =========================
+# /gift command (reply-friendly)
+# =========================
+@dp.message(Command("gift"))
+@dp.message(Command("g"))
+async def cmd_gift(m: Message):
+    if not await ensure_admin_or_denied(m):
+        return
+    adm = await db_get_admin(m.from_user.id)
+    lang = adm["lang"]
+    if not adm.get("session_string"):
+        return await m.reply(tr(lang, "need_session"))
+
+    parts = (m.text or "").split(maxsplit=3)
+    # /gift 50 [target] [comment...]
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await m.reply(tr(lang, "bad_args"))
+
+    max_stars = int(parts[1])
+    target = None
+    comment = None
+
+    # group reply -> default target=reply user
+    reply_user = None
+    if m.reply_to_message and m.reply_to_message.from_user:
+        reply_user = m.reply_to_message.from_user
+
+    if len(parts) >= 3:
+        # could be target or comment (if reply exists)
+        maybe = parts[2].strip()
+        if maybe.startswith("@") or maybe.isdigit() or maybe.lower() == "me":
+            target = normalize_target(maybe)
+            comment = safe_comment(parts[3] if len(parts) >= 4 else None)
+        else:
+            # treat as comment if target via reply
+            comment = safe_comment(" ".join(parts[2:]))
+    else:
+        comment = None
+
+    if not target:
+        if reply_user:
+            # use @username if possible else id (may fail if relayer can't resolve)
+            if reply_user.username:
+                target = "@" + reply_user.username
+            else:
+                # will try numeric id; may fail if relayer cannot resolve it
+                target = str(reply_user.id)
+        else:
+            # default target is me
+            if m.from_user.username:
+                target = "@" + m.from_user.username
+            else:
+                target = str(m.from_user.id)
+
+    gifts = gifts_up_to(max_stars)
+    if not gifts:
+        return await m.reply("No gifts for this limit.")
+
+    gifts = gifts[:INLINE_LIMIT]
+    action_ids: List[int] = []
+    for g in gifts:
+        aid = await db_create_action(
+            creator_id=m.from_user.id,
+            target=target,
+            gift=g,
+            comment=comment,
+            hide_name=int(adm["default_hide_name"] or 0),
+        )
+        action_ids.append(aid)
+
+    cm = comment if comment else tr(lang, "comment_empty")
+    mode_txt = fmt_mode(lang, int(adm["default_hide_name"] or 0))
+
+    txt = (
+        f"{tr(lang, 'pick_title')}\n\n"
+        f"🎯 {target}\n"
+        f"🔒 {mode_txt}\n"
+        f"💬 {cm}"
+    )
+    await m.reply(txt, reply_markup=pick_kb(lang, action_ids, gifts))
 
 
 # =========================
 # Inline mode
+# Query formats:
+#   "50 @user comment"
+#   "50"  (target=reply required on send)
 # =========================
+_inline_cache: Dict[Tuple[int, str], Tuple[float, List[InlineQueryResultArticle]]] = {}
+
+
+def parse_inline_query(q: str) -> Tuple[Optional[int], str, Optional[str]]:
+    """
+    returns (max_stars, target, comment)
+    target may be '__reply__' if not provided
+    """
+    q = (q or "").strip()
+    if not q:
+        return None, "__reply__", None
+    parts = q.split()
+    if not parts[0].isdigit():
+        return None, "__reply__", None
+    max_stars = int(parts[0])
+    target = "__reply__"
+    comment = None
+    if len(parts) >= 2:
+        if parts[1].startswith("@") or parts[1].isdigit() or parts[1].lower() == "me":
+            target = normalize_target(parts[1])
+            comment = safe_comment(" ".join(parts[2:]) if len(parts) >= 3 else None)
+        else:
+            # no target, only comment
+            comment = safe_comment(" ".join(parts[1:]))
+    return max_stars, target, comment
+
+
 @dp.inline_query()
 async def inline_handler(q: InlineQuery):
-    ok, _, lang = await require_admin(q.from_user.id)
-    if not ok:
+    adm = await db_get_admin(q.from_user.id)
+    if not adm:
         return await q.answer([], is_personal=True, cache_time=1)
 
-    bot_me = await bot.get_me()
-    bot_username = bot_me.username or "YourBot"
+    lang = adm["lang"]
+    if not adm.get("session_string"):
+        # don't spam results
+        return await q.answer([], is_personal=True, cache_time=1, switch_pm_text=tr(lang, "need_session"), switch_pm_parameter="login")
 
-    prefs_lang, prefs_target, prefs_comment, prefs_anon = await db_get_prefs(q.from_user.id)
-
-    parsed = parse_inline_query(q.query, prefs_target, prefs_comment, prefs_anon)
-    if not parsed:
-        hint = t(prefs_lang, "inline_bad", bot=bot_username)
-        res = InlineQueryResultArticle(
+    max_stars, target, comment = parse_inline_query(q.query)
+    if not max_stars:
+        # show help result
+        help_res = InlineQueryResultArticle(
             id="help",
-            title="Usage",
-            description=hint,
-            input_message_content=InputTextMessageContent(message_text=hint),
+            title=tr(lang, "inline_help"),
+            input_message_content=InputTextMessageContent(
+                message_text=tr(lang, "inline_help"),
+                parse_mode="HTML",
+            ),
         )
-        return await q.answer([res], is_personal=True, cache_time=1)
+        return await q.answer([help_res], is_personal=True, cache_time=1)
 
-    max_stars, target, comment, anonymous = parsed
-    if not target:
-        hint = t(prefs_lang, "inline_need_target", bot=bot_username)
-        res = InlineQueryResultArticle(
-            id="need_target",
-            title="Target required",
-            description=hint,
-            input_message_content=InputTextMessageContent(message_text=hint),
-        )
-        return await q.answer([res], is_personal=True, cache_time=1)
+    cache_key = (q.from_user.id, q.query.strip())
+    now = time.time()
+    if cache_key in _inline_cache:
+        ts, items = _inline_cache[cache_key]
+        if now - ts < 8.0:
+            return await q.answer(items, is_personal=True, cache_time=1)
 
-    token = make_inline_token(q.from_user.id)
-    await db_put_inline_ctx(token, q.from_user.id, target, comment, anonymous)
+    gifts = gifts_up_to(max_stars)[:INLINE_LIMIT]
+    results: List[InlineQueryResultArticle] = []
 
-    gifts = [g for g in GIFT_CATALOG if g.stars <= max_stars]
-    if not gifts:
-        res = InlineQueryResultArticle(
-            id="none",
-            title="No gifts",
-            description=f"<= {max_stars}★ not found",
-            input_message_content=InputTextMessageContent(message_text="No gifts for this price."),
-        )
-        return await q.answer([res], is_personal=True, cache_time=1)
-
-    results = []
-    comment_text = comment if comment else "(none)" if prefs_lang == "en" else ("(yo‘q)" if prefs_lang == "uz" else "(нет)")
-    mode = "anon" if anonymous == 1 else "show"
-
-    for g in gifts[:30]:
-        title = t(prefs_lang, "inline_title", label=g.label, stars=g.stars)
-        desc = t(prefs_lang, "inline_desc", target=target, mode=mode)
-
-        preview = t(
-            prefs_lang,
-            "msg_preview",
-            label=g.label,
-            stars=g.stars,
+    for g in gifts:
+        aid = await db_create_action(
+            creator_id=q.from_user.id,
             target=target,
-            mode=mode,
-            comment=comment_text,
-        ) + "\n\n" + t(prefs_lang, "note_anon")
+            gift=g,
+            comment=comment,
+            hide_name=int(adm["default_hide_name"] or 0),
+        )
+        cm = comment if comment else tr(lang, "comment_empty")
+        mode_txt = fmt_mode(lang, int(adm["default_hide_name"] or 0))
+
+        tgt_txt = target if target != "__reply__" else "reply-target"
+        msg_text = (
+            f"🎁 {g.label}  ⭐{g.stars}\n"
+            f"🎯 {tgt_txt}\n"
+            f"🔒 {mode_txt}\n"
+            f"💬 {cm}\n\n"
+            f"{tr(lang, 'confirm_title')}"
+        )
 
         results.append(
             InlineQueryResultArticle(
-                id=f"{token}:{g.id}",
-                title=title,
-                description=desc,
-                input_message_content=InputTextMessageContent(message_text=preview),
-                reply_markup=inline_kb(prefs_lang, token, g.id, anonymous),
+                id=str(aid),
+                title=f"{g.label} {g.stars}⭐",
+                description=f"target: {tgt_txt} | mode: {('anon' if int(adm['default_hide_name'] or 0)==1 else 'show')}",
+                input_message_content=InputTextMessageContent(
+                    message_text=msg_text,
+                    parse_mode="HTML",
+                ),
+                reply_markup=action_kb(lang, aid),
             )
         )
 
+    _inline_cache[cache_key] = (now, results)
     await q.answer(results, is_personal=True, cache_time=1)
 
 
-@dp.callback_query(F.data.startswith("act:"))
-async def inline_actions(c: CallbackQuery):
-    ok, _, lang = await require_admin(c.from_user.id)
-    if not ok:
-        return await c.answer("DENIED", show_alert=True)
+# =========================
+# Action callbacks
+# =========================
+@dp.callback_query(F.data.startswith("a:"))
+async def action_callback(c: CallbackQuery):
+    adm = await ensure_admin_callback_or_denied(c)
+    if not adm:
+        return
+    lang = adm["lang"]
 
-    parts = c.data.split(":")
-    if len(parts) < 4:
-        return await c.answer("BAD", show_alert=True)
+    try:
+        _, aid_s, cmd = c.data.split(":", 2)
+        action_id = int(aid_s)
+    except Exception:
+        return await c.answer("bad", show_alert=True)
 
-    action = parts[1]
-    token = parts[2]
-    gift_id = int(parts[3])
+    act = await db_get_action(action_id)
+    if not act:
+        return await c.answer("not found", show_alert=True)
 
-    ctx = await db_get_inline_ctx(token)
-    if not ctx or ctx["user_id"] != c.from_user.id:
-        return await c.answer("CTX expired", show_alert=True)
+    # Only creator or owner can control
+    if not is_owner(adm) and act["creator_id"] != c.from_user.id:
+        return await c.answer(tr(lang, "denied"), show_alert=True)
 
-    gift = GIFTS_BY_ID.get(gift_id)
+    gift = GIFTS_BY_ID.get(act["gift_id"])
     if not gift:
-        return await c.answer("Gift not found", show_alert=True)
+        return await c.answer("gift missing", show_alert=True)
 
-    # message key for idempotency
-    if c.inline_message_id:
-        msg_key = f"inline:{c.inline_message_id}:{gift_id}"
-    else:
-        msg_key = f"msg:{c.message.chat.id}:{c.message.message_id}:{gift_id}"
+    # PICK -> show confirm with same action
+    if cmd == "pick":
+        if act["status"] != "draft":
+            await c.answer(tr(lang, "already_done"), show_alert=True)
+            return
 
-    target = ctx["target"]
-    comment = ctx["comment"]
-    anonymous = int(ctx["anonymous"] or 0)
-    mode = "anon" if anonymous == 1 else "show"
-
-    comment_text = comment if comment else "(none)" if lang == "en" else ("(yo‘q)" if lang == "uz" else "(нет)")
-    preview = t(
-        lang,
-        "msg_preview",
-        label=gift.label,
-        stars=gift.stars,
-        target=target,
-        mode=mode,
-        comment=comment_text,
-    ) + "\n\n" + t(lang, "note_anon")
-
-    if action == "toggle":
-        new_anon = 0 if anonymous == 1 else 1
-        await db_update_inline_mode(token, new_anon)
-        new_mode = "anon" if new_anon == 1 else "show"
-        new_preview = t(
-            lang,
-            "msg_preview",
-            label=gift.label,
-            stars=gift.stars,
-            target=target,
-            mode=new_mode,
-            comment=comment_text,
-        ) + "\n\n" + t(lang, "note_anon")
-
+        cm = act["comment"] if act["comment"] else tr(lang, "comment_empty")
+        mode_txt = fmt_mode(lang, act["hide_name"])
+        txt = (
+            f"🎁 {gift.label}  ⭐{gift.stars}\n"
+            f"🎯 {act['target']}\n"
+            f"🔒 {mode_txt}\n"
+            f"💬 {cm}\n\n"
+            f"{tr(lang, 'confirm_title')}"
+        )
         await c.answer("OK")
-        return await safe_edit_inline(c, new_preview, inline_kb(lang, token, gift_id, new_anon))
-
-    if action == "cancel":
-        # mark as done so it can't be used later
-        await db_guard_once(msg_key)
-        await c.answer("OK")
-        return await safe_edit_inline(c, t(lang, "cancelled"), None)
-
-    if action == "send":
-        # idempotency
-        allowed = await db_guard_once(msg_key)
-        if not allowed:
-            return await c.answer(t(lang, "already_done"), show_alert=True)
-
-        # pick relayer session: admin's own -> fallback default
-        session = await db_get_session(c.from_user.id)
-        if not session:
-            session = DEFAULT_RELAYER_SESSION or None
-        if not session:
-            return await c.answer(t(lang, "need_session"), show_alert=True)
-
-        await c.answer("OK")
-        await safe_edit_inline(c, t(lang, "sending"), None)
-
-        try:
-            hide_name = (anonymous == 1)
-            # NOTE: Telegram may still show sender in chat; hide_name often affects gift details.
-            comment_attached = await pool.send_star_gift(
-                session_string=session,
-                target=(target if target != "me" else ("@" + c.from_user.username if c.from_user.username else int(c.from_user.id))),
-                gift=gift,
-                comment=comment,
-                hide_name=hide_name,
-            )
-
-            done_text = t(lang, "sent")
-            if comment and not comment_attached:
-                done_text += "\n⚠️ Comment ignored by Telegram (fallback without comment)."
-            await safe_edit_inline(c, done_text, None)
-
-        except Exception as e:
-            await safe_edit_inline(c, t(lang, "fail", e=str(e)), None)
-
+        await safe_edit_message(bot, c, txt, reply_markup=action_kb(lang, action_id))
         return
 
+    # TOGGLE
+    if cmd == "toggle":
+        new_hide = await db_toggle_action_hide(action_id)
+        if new_hide is None:
+            return await c.answer(tr(lang, "already_done"), show_alert=True)
+
+        act2 = await db_get_action(action_id)
+        cm = act2["comment"] if act2["comment"] else tr(lang, "comment_empty")
+        mode_txt = fmt_mode(lang, act2["hide_name"])
+        tgt_txt = act2["target"]
+
+        txt = (
+            f"🎁 {gift.label}  ⭐{gift.stars}\n"
+            f"🎯 {tgt_txt}\n"
+            f"🔒 {mode_txt}\n"
+            f"💬 {cm}\n\n"
+            f"{tr(lang, 'confirm_title')}"
+        )
+        await c.answer("OK")
+        await safe_edit_message(bot, c, txt, reply_markup=action_kb(lang, action_id))
+        return
+
+    # CANCEL
+    if cmd == "cancel":
+        ok = await db_cancel_action(action_id)
+        await c.answer("OK")
+        if not ok:
+            return await c.answer(tr(lang, "already_done"), show_alert=True)
+
+        txt = f"{tr(lang, 'cancelled')}\n🎁 {gift.label} ⭐{gift.stars}"
+        await safe_edit_message(bot, c, txt, reply_markup=None)
+        return
+
+    # SEND
+    if cmd == "send":
+        if not adm.get("session_string"):
+            return await c.answer(tr(lang, "need_session"), show_alert=True)
+
+        locked = await db_try_lock_send(action_id)
+        if not locked:
+            return await c.answer(tr(lang, "already_done"), show_alert=True)
+
+        # Resolve target
+        target_raw = act["target"]
+        target: Union[str, int]
+
+        if target_raw == "__reply__":
+            # Try find reply target if message exists
+            if c.message and c.message.reply_to_message and c.message.reply_to_message.from_user:
+                ru = c.message.reply_to_message.from_user
+                if ru.username:
+                    target = "@" + ru.username
+                else:
+                    target = int(ru.id)
+            else:
+                await db_mark_failed(action_id, "reply_target_missing")
+                await c.answer(tr(lang, "need_reply_target"), show_alert=True)
+                return
+        else:
+            if target_raw.startswith("@"):
+                target = target_raw
+            elif target_raw.isdigit():
+                target = int(target_raw)
+            else:
+                target = target_raw
+
+        cm = act["comment"]
+        hide_name = (act["hide_name"] == 1)
+
+        # immediate UI feedback
+        await c.answer("Sending...")
+
+        try:
+            used_comment = await relayers.send_star_gift(
+                admin_id=c.from_user.id,
+                session_string=adm["session_string"],
+                target=target,
+                gift=gift,
+                comment=cm,
+                hide_name=hide_name,
+            )
+            await db_mark_sent(action_id)
+
+            note = tr(lang, "sent_ok")
+            if cm and not used_comment:
+                note += "\n⚠️ Comment fallback: sent without comment (Telegram rejected message)."
+
+            txt = f"{note}\n🎁 {gift.label} ⭐{gift.stars}"
+            await safe_edit_message(bot, c, txt, reply_markup=None)
+
+        except RuntimeError as e:
+            if str(e) == "ENTITY_NOT_FOUND":
+                await db_mark_failed(action_id, "ENTITY_NOT_FOUND")
+                await safe_edit_message(bot, c, tr(lang, "entity_fail"), reply_markup=None)
+            else:
+                await db_mark_failed(action_id, str(e))
+                await safe_edit_message(bot, c, f"❌ Error: {e}", reply_markup=None)
+        except Exception as e:
+            await db_mark_failed(action_id, str(e))
+            await safe_edit_message(bot, c, f"❌ Error: {e}", reply_markup=None)
+        return
+
+    await c.answer("unknown", show_alert=True)
+
 
 # =========================
-# Minimal health server (optional)
+# Background cleanup
 # =========================
-async def run_health_server():
-    # optional (if your host needs a port)
-    from aiohttp import web
-
-    async def health(_):
-        return web.json_response({"ok": True})
-
-    app = web.Application()
-    app.router.add_get("/", health)
-    app.router.add_get("/health", health)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, WEB_BIND, PORT)
-    await site.start()
-    log.info("Health server on %s:%s", WEB_BIND, PORT)
-    return runner
+async def cleanup_loop():
+    while True:
+        try:
+            await db_cleanup_drafts()
+        except Exception as e:
+            log.warning("cleanup error: %s", e)
+        await asyncio.sleep(300)  # 5 min
 
 
 # =========================
-# Main
+# MAIN
 # =========================
 async def main():
-    log.info("BOOT...")
+    log.info("BOOT: starting...")
     await db_init()
-
-    # make sure bot sees inline username for hint
-    me = await bot.get_me()
-    log.info("Bot: @%s", me.username)
-
-    # if default relayer exists, validate once (optional)
-    if DEFAULT_RELAYER_SESSION:
-        try:
-            await pool._get_client(DEFAULT_RELAYER_SESSION)
-            log.info("Default relayer session OK")
-        except Exception as e:
-            log.warning("Default relayer invalid: %s", e)
-
-    runner = None
+    log.info("BOOT: db ok")
+    asyncio.create_task(cleanup_loop(), name="cleanup_loop")
+    log.info("BOOT: polling...")
     try:
-        runner = await run_health_server()
-    except Exception as e:
-        log.warning("Health server not started: %s", e)
-
-    try:
-        log.info("Polling...")
         await dp.start_polling(bot)
     finally:
-        await pool.stop_all()
-        if runner:
-            try:
-                await runner.cleanup()
-            except Exception:
-                pass
+        await relayers.close_all()
 
 
 if __name__ == "__main__":
